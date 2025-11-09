@@ -17,7 +17,7 @@ from shapely.geometry import Polygon, mapping
 import ifcopenshell.util.placement
 import subprocess
 import time
-
+from flask_cors import CORS
 # Load environment variables from .env file if it exists
 try:
     from dotenv import load_dotenv
@@ -28,13 +28,36 @@ except ImportError:
 
 
 app = Flask(__name__, static_url_path='/static', static_folder='static')
+# Configure CORS to allow requests from localhost:3000 and other common development ports
+CORS(app,
+     origins=[
+         'http://localhost:3000',
+         'http://127.0.0.1:3000',
+         'http://localhost:3001',
+         'http://127.0.0.1:3001',
+         'http://localhost:8080',
+         'http://127.0.0.1:8080'
+     ],
+     methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+     allow_headers=['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+     supports_credentials=True,
+     expose_headers=['Content-Type', 'Access-Control-Allow-Origin'])
 app.secret_key = '88746898'
 app.config['UPLOAD_FOLDER'] = 'uploads'
 ALLOWED_EXTENSIONS = {'ifc'}  # Define allowed file extensions as a set
 
 # Environment configuration
 API_BASE_URL = os.getenv('API_BASE_URL', 'http://localhost:8000')
-
+# Global CORS handler for all responses
+@app.after_request
+def after_request(response):
+    origin = request.headers.get('Origin')
+    if origin in ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3001', 'http://127.0.0.1:3001']:
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept,Origin')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
 # Function to check if a filename has an allowed extension
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -716,7 +739,7 @@ def visualize(filename):
     A = math.cos(Rotation_solution)
     B = math.sin(Rotation_solution)        
     target_epsg = "EPSG:"+ target[1]
-    transformer2 = Transformer.from_crs(target_epsg,"EPSG:4326")
+    transformer2 = Transformer.from_crs(target_epsg,"EPSG:4326", always_xy=True)
     scaleError = session.get('scaleError')
     Gx , Gy = 0 , 0
     eff = session.get('coeff')
@@ -751,9 +774,11 @@ def visualize(filename):
                 xx = xx+Gx
                 yy = yy+Gy
                 break
-    x2,y2 = transformer2.transform(xx,yy)
-    Latitude =x2
-    Longitude =y2
+    # Transform from target EPSG to WGS84 (lat/lng)
+    # with always_xy=True, transformer returns (longitude, latitude)
+    lng, lat = transformer2.transform(xx, yy)
+    Latitude = lat
+    Longitude = lng
     projstring = pyproj.CRS(target_epsg).to_proj4()
     crs = pyproj.CRS(projstring)
     alpha_value = crs.to_dict().get('alpha', None)
@@ -901,6 +926,495 @@ def test_auto_georef():
 def simple_test():
     """Simple test page for auto-georeferencing"""
     return render_template('simple_test.html')
+@app.route('/api/analyze-georeferencing', methods=['POST', 'OPTIONS'])
+def analyze_georeferencing():
+    """
+    Comprehensive API endpoint to analyze IFC file georeferencing information
+    Accepts file upload and returns detailed analysis including coordinates, georeferencing status, and spatial data
+    """
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        response = make_response()
+        response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With")
+        response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response
+    try:
+        # Check if file was uploaded
+        if 'file' not in request.files:
+            error_response = jsonify({
+                'error': 'No file uploaded',
+                'is_georeferenced': False
+            })
+            error_response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+            error_response.headers.add("Access-Control-Allow-Credentials", "true")
+            return error_response, 400
+        
+        file = request.files['file']
+        if file.filename == '' or not file.filename.lower().endswith('.ifc'):
+            error_response = jsonify({
+                'error': 'Invalid file. Please upload an IFC file.',
+                'is_georeferenced': False
+            })
+            error_response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+            error_response.headers.add("Access-Control-Allow-Credentials", "true")
+            return error_response, 400
+        
+        # Save uploaded file temporarily
+        filename = secure_filename(file.filename)
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{filename}")
+        file.save(temp_path)
+        
+        # Open and analyze IFC file
+        ifc_file = ifcopenshell.open(temp_path)
+        
+        # Initialize comprehensive analysis results
+        analysis_result = {
+            'filename': filename,
+            'schema': ifc_file.schema,
+            'is_georeferenced': False,
+            'georeferencing_method': None,
+            'georeferencing_info': {},
+            'spatial_structure': {},
+            'coordinates_info': {},
+            'world_coordinates': {},
+            'mapconversion_data': {},
+            'site_reference': {},
+            'units_info': {},
+            'building_elements': {},
+            'issues': [],
+            'recommendations': []
+        }
+        
+        print(f"=== ANALYZING GEOREFERENCING FOR {filename} ===")
+        print(f"IFC Schema: {ifc_file.schema}")
+        
+        # Use the existing georef function to determine if file is georeferenced
+        message, is_georeferenced = georef(ifc_file)
+        analysis_result['is_georeferenced'] = is_georeferenced
+        
+        print(f"Georef function result: {message}")
+        print(f"Is georeferenced: {is_georeferenced}")
+        
+        if is_georeferenced:
+            # Get detailed georeferencing information
+            try:
+                IfcMapConversion, IfcProjectedCRS = georeference_ifc.get_mapconversion_crs(ifc_file=ifc_file)
+                
+                if IfcMapConversion is not None and IfcProjectedCRS is not None:
+                    # Determine method based on schema
+                    if ifc_file.schema[:4] == 'IFC4':
+                        analysis_result['georeferencing_method'] = 'IFC4+ MapConversion'
+                    elif ifc_file.schema == 'IFC2X3':
+                        analysis_result['georeferencing_method'] = 'IFC2x3 Property Sets'
+                    else:
+                        analysis_result['georeferencing_method'] = 'Unknown Method'
+                    
+                    print(f"✅ Found georeferencing data using {analysis_result['georeferencing_method']}")
+                    
+                    # Extract MapConversion information
+                    map_conversion = {
+                        'eastings': float(IfcMapConversion.Eastings) if hasattr(IfcMapConversion, 'Eastings') and IfcMapConversion.Eastings is not None else None,
+                        'northings': float(IfcMapConversion.Northings) if hasattr(IfcMapConversion, 'Northings') and IfcMapConversion.Northings is not None else None,
+                        'orthogonal_height': float(IfcMapConversion.OrthogonalHeight) if hasattr(IfcMapConversion, 'OrthogonalHeight') and IfcMapConversion.OrthogonalHeight is not None else None,
+                        'x_axis_abscissa': float(IfcMapConversion.XAxisAbscissa) if hasattr(IfcMapConversion, 'XAxisAbscissa') and IfcMapConversion.XAxisAbscissa is not None else 1.0,
+                        'x_axis_ordinate': float(IfcMapConversion.XAxisOrdinate) if hasattr(IfcMapConversion, 'XAxisOrdinate') and IfcMapConversion.XAxisOrdinate is not None else 0.0,
+                        'scale': float(IfcMapConversion.Scale) if hasattr(IfcMapConversion, 'Scale') and IfcMapConversion.Scale is not None else 1.0
+                    }
+                    
+                    analysis_result['georeferencing_info']['map_conversion'] = map_conversion
+                    
+                    # Extract ProjectedCRS information
+                    projected_crs = {
+                        'name': IfcProjectedCRS.Name if hasattr(IfcProjectedCRS, 'Name') and IfcProjectedCRS.Name else 'Unknown CRS',
+                        'description': IfcProjectedCRS.Description if hasattr(IfcProjectedCRS, 'Description') and IfcProjectedCRS.Description else None
+                    }
+                    
+                    analysis_result['georeferencing_info']['projected_crs'] = projected_crs
+                    
+                    # Add mapconversion_data for compatibility
+                    analysis_result['mapconversion_data'] = {
+                        'target_crs': projected_crs['name'],
+                        'eastings': map_conversion['eastings'],
+                        'northings': map_conversion['northings'],
+                        'orthogonal_height': map_conversion['orthogonal_height'],
+                        'scale': map_conversion['scale']
+                    }
+                    
+                    # Calculate rotation
+                    rotation_radians = math.atan2(map_conversion['x_axis_ordinate'], map_conversion['x_axis_abscissa'])
+                    rotation_degrees = math.degrees(rotation_radians)
+                    
+                    analysis_result['georeferencing_info']['rotation'] = {
+                        'degrees': rotation_degrees,
+                        'radians': rotation_radians
+                    }
+                    
+                    # Calculate world coordinates if we have valid coordinates
+                    if map_conversion['eastings'] is not None and map_conversion['northings'] is not None:
+                        try:
+                            # Extract EPSG code if available
+                            if ':' in projected_crs['name']:
+                                epsg_code = int(projected_crs['name'].split(':')[1])
+                                
+                                # Convert to WGS84 for lat/lon
+                                from pyproj import Transformer
+                                transformer = Transformer.from_crs(f"EPSG:{epsg_code}", "EPSG:4326")
+                                lat, lon = transformer.transform(map_conversion['eastings'], map_conversion['northings'])
+                                
+                                analysis_result['world_coordinates'] = {
+                                    'utm': {
+                                        'x': map_conversion['eastings'],
+                                        'y': map_conversion['northings'],
+                                        'z': map_conversion['orthogonal_height'] or 0,
+                                        'zone': epsg_code
+                                    },
+                                    'wgs84': {
+                                        'latitude': lat,
+                                        'longitude': lon,
+                                        'altitude': map_conversion['orthogonal_height'] or 0
+                                    },
+                                    'three_js': {
+                                        'x': map_conversion['eastings'] * 0.001,  # Scale for Three.js
+                                        'y': (map_conversion['orthogonal_height'] or 0) * 0.001,
+                                        'z': map_conversion['northings'] * 0.001,
+                                        'scale': map_conversion['scale'],
+                                        'rotation_radians': rotation_radians
+                                    }
+                                }
+                                
+                                print(f"   Real-world location: {lat:.6f}°N, {lon:.6f}°E")
+                                print(f"   UTM coordinates: E={map_conversion['eastings']:.2f}, N={map_conversion['northings']:.2f}")
+                                
+                        except Exception as e:
+                            print(f"Warning: Could not calculate world coordinates: {e}")
+                    
+            except Exception as e:
+                analysis_result['issues'].append({
+                    'type': 'error',
+                    'message': f'Error extracting georeferencing details: {str(e)}'
+                })
+                print(f"❌ Error extracting georeferencing details: {str(e)}")
+        
+        # Check for site reference information (IFC2x3 and fallback)
+        try:
+            ifc_sites = ifc_file.by_type("IfcSite")
+            if ifc_sites:
+                site = ifc_sites[0]
+                
+                site_ref = {
+                    'name': site.Name if hasattr(site, 'Name') and site.Name else None,
+                    'description': site.Description if hasattr(site, 'Description') and site.Description else None,
+                    'ref_latitude': None,
+                    'ref_longitude': None,
+                    'ref_elevation': None,
+                    'local_placement': None
+                }
+                
+                # Check RefLatitude and RefLongitude
+                if hasattr(site, 'RefLatitude') and site.RefLatitude is not None:
+                    lat_components = site.RefLatitude
+                    if len(lat_components) >= 3:
+                        lat = float(lat_components[0]) + float(lat_components[1])/60 + float(lat_components[2] + (lat_components[3] if len(lat_components) > 3 else 0)/1000000)/(60*60)
+                        site_ref['ref_latitude'] = lat
+                
+                if hasattr(site, 'RefLongitude') and site.RefLongitude is not None:
+                    lon_components = site.RefLongitude
+                    if len(lon_components) >= 3:
+                        lon = float(lon_components[0]) + float(lon_components[1])/60 + float(lon_components[2] + (lon_components[3] if len(lon_components) > 3 else 0)/1000000)/(60*60)
+                        site_ref['ref_longitude'] = lon
+                
+                if hasattr(site, 'RefElevation') and site.RefElevation is not None:
+                    site_ref['ref_elevation'] = float(site.RefElevation)
+                
+                # Check local placement
+                if hasattr(site, 'ObjectPlacement') and site.ObjectPlacement:
+                    try:
+                        matrix = ifcopenshell.util.placement.get_local_placement(site.ObjectPlacement)
+                        site_ref['local_placement'] = {
+                            'x': float(matrix[0][3]),
+                            'y': float(matrix[1][3]), 
+                            'z': float(matrix[2][3])
+                        }
+                    except:
+                        pass
+                
+                analysis_result['site_reference'] = site_ref
+                
+        except Exception as e:
+            print(f"Warning: Error checking site reference: {e}")
+        
+        # Analyze units
+        try:
+            unit_assignments = ifc_file.by_type('IfcUnitAssignment')
+            if unit_assignments:
+                units = unit_assignments[0].Units
+                units_info = {
+                    'length_unit': None,
+                    'area_unit': None, 
+                    'volume_unit': None,
+                    'angle_unit': None
+                }
+                
+                for unit in units:
+                    if unit.is_a('IfcSIUnit'):
+                        unit_type = unit.UnitType
+                        unit_name = unit.Name
+                        if hasattr(unit, 'Prefix') and unit.Prefix:
+                            unit_name = unit.Prefix + unit_name
+                        
+                        if unit_type == 'LENGTHUNIT':
+                            units_info['length_unit'] = unit_name
+                        elif unit_type == 'AREAUNIT':
+                            units_info['area_unit'] = unit_name
+                        elif unit_type == 'VOLUMEUNIT':
+                            units_info['volume_unit'] = unit_name
+                        elif unit_type == 'PLANEANGLEUNIT':
+                            units_info['angle_unit'] = unit_name
+                
+                analysis_result['units_info'] = units_info
+                
+        except Exception as e:
+            print(f"Warning: Error analyzing units: {e}")
+        
+        # Analyze spatial structure
+        try:
+            projects = ifc_file.by_type('IfcProject')
+            buildings = ifc_file.by_type('IfcBuilding')
+            building_storeys = ifc_file.by_type('IfcBuildingStorey')
+            spaces = ifc_file.by_type('IfcSpace')
+            sites = ifc_file.by_type('IfcSite')
+            
+            analysis_result['spatial_structure'] = {
+                'projects': len(projects),
+                'sites': len(sites),
+                'buildings': len(buildings),
+                'building_storeys': len(building_storeys),
+                'spaces': len(spaces)
+            }
+            
+        except Exception as e:
+            print(f"Warning: Error analyzing spatial structure: {e}")
+        
+        # Analyze building elements and coordinates
+        try:
+            products = ifc_file.by_type('IfcProduct')
+            coordinates = []
+            element_types = {}
+            
+            for product in products:
+                # Count element types
+                element_type = product.is_a()
+                element_types[element_type] = element_types.get(element_type, 0) + 1
+                
+                # Extract coordinates
+                if product.Representation and product.ObjectPlacement:
+                    try:
+                        matrix = ifcopenshell.util.placement.get_local_placement(product.ObjectPlacement)
+                        x, y, z = matrix[0][3], matrix[1][3], matrix[2][3]
+                        coordinates.append([float(x), float(y), float(z)])
+                    except:
+                        continue
+            
+            if coordinates:
+                import numpy as np
+                coords_array = np.array(coordinates)
+                
+                analysis_result['coordinates_info'] = {
+                    'total_objects': len(coordinates),
+                    'bounds': {
+                        'min_x': float(coords_array[:, 0].min()),
+                        'max_x': float(coords_array[:, 0].max()),
+                        'min_y': float(coords_array[:, 1].min()),
+                        'max_y': float(coords_array[:, 1].max()),
+                        'min_z': float(coords_array[:, 2].min()),
+                        'max_z': float(coords_array[:, 2].max())
+                    },
+                    'dimensions': {
+                        'width': float(coords_array[:, 0].max() - coords_array[:, 0].min()),
+                        'depth': float(coords_array[:, 1].max() - coords_array[:, 1].min()),
+                        'height': float(coords_array[:, 2].max() - coords_array[:, 2].min())
+                    },
+                    'center': {
+                        'x': float(coords_array[:, 0].mean()),
+                        'y': float(coords_array[:, 1].mean()),
+                        'z': float(coords_array[:, 2].mean())
+                    }
+                }
+            
+            # Building elements summary
+            analysis_result['building_elements'] = {
+                'total_products': len(products),
+                'element_types': element_types,
+                'top_elements': sorted(element_types.items(), key=lambda x: x[1], reverse=True)[:10]
+            }
+            
+        except Exception as e:
+            print(f"Warning: Error analyzing coordinates: {e}")
+        
+        # Generate recommendations
+        if not is_georeferenced:
+            analysis_result['recommendations'].append({
+                'type': 'error',
+                'message': 'File is not georeferenced. Consider adding coordinate reference system information.'
+            })
+        else:
+            analysis_result['recommendations'].append({
+                'type': 'success',
+                'message': f"File is properly georeferenced using {analysis_result['georeferencing_method']}"
+            })
+        
+        # Add bounding box in easting/northing coordinates if georeferenced
+        if is_georeferenced and 'coordinates_info' in analysis_result and analysis_result['coordinates_info'] and 'georeferencing_info' in analysis_result:
+            try:
+                bounds = analysis_result['coordinates_info']['bounds']
+                map_conv = analysis_result['georeferencing_info'].get('map_conversion', {})
+                proj_crs = analysis_result['georeferencing_info'].get('projected_crs', {})
+                
+                eastings = map_conv.get('eastings', 0)
+                northings = map_conv.get('northings', 0)
+                orth_height = map_conv.get('orthogonal_height', 0)
+                x_axis_abscissa = map_conv.get('x_axis_abscissa', 1.0)
+                x_axis_ordinate = map_conv.get('x_axis_ordinate', 0.0)
+                scale = map_conv.get('scale', 1.0)
+                
+                # Get CRS EPSG code for coordinate transformation
+                crs_name = proj_crs.get('name', 'EPSG:2056')
+                epsg_code = None
+                if ':' in crs_name:
+                    try:
+                        epsg_code = int(crs_name.split(':')[1])
+                    except:
+                        epsg_code = 2056
+                else:
+                    epsg_code = 2056
+                
+                # Create transformer for world coords to WGS84 (lat/lon)
+                transformer = None
+                try:
+                    transformer = Transformer.from_crs(f"EPSG:{epsg_code}", "EPSG:4326", always_xy=True)
+                except Exception as e:
+                    print(f"Warning: Could not create coordinate transformer: {e}")
+                
+                # Calculate 4 corners of bounding box at ground level
+                corners_local = [
+                    {'x': bounds['min_x'], 'y': bounds['min_y'], 'z': bounds['min_z'], 'name': 'bottom_left'},
+                    {'x': bounds['max_x'], 'y': bounds['min_y'], 'z': bounds['min_z'], 'name': 'bottom_right'},
+                    {'x': bounds['max_x'], 'y': bounds['max_y'], 'z': bounds['min_z'], 'name': 'top_right'},
+                    {'x': bounds['min_x'], 'y': bounds['max_y'], 'z': bounds['min_z'], 'name': 'top_left'}
+                ]
+                
+                # Transform to world coordinates (easting/northing)
+                bbox_world_corners = []
+                for corner in corners_local:
+                    local_x = corner['x']
+                    local_y = corner['y']
+                    local_z = corner['z']
+                    
+                    # Apply rotation to local coordinates
+                    if x_axis_abscissa and x_axis_ordinate:
+                        angle = math.atan2(x_axis_ordinate, x_axis_abscissa)
+                        cos_a = math.cos(angle)
+                        sin_a = math.sin(angle)
+                        rotated_x = local_x * cos_a - local_y * sin_a
+                        rotated_y = local_x * sin_a + local_y * cos_a
+                        local_x, local_y = rotated_x, rotated_y
+                    
+                    # Apply scale
+                    if scale and scale != 1.0:
+                        local_x *= scale
+                        local_y *= scale
+                        local_z *= scale
+                    
+                    # Add eastings/northings
+                    world_e = local_x + eastings
+                    world_n = local_y + northings
+                    world_h = local_z + (orth_height if orth_height else 0)
+                    
+                    # Convert to WGS84 lat/lon
+                    lat, lon = None, None
+                    if transformer:
+                        try:
+                            lon, lat = transformer.transform(world_e, world_n)
+                        except Exception as e:
+                            print(f"Warning: Could not transform corner {corner['name']}: {e}")
+                    
+                    bbox_world_corners.append({
+                        'name': corner['name'],
+                        'easting': world_e,
+                        'northing': world_n,
+                        'elevation': world_h,
+                        'latitude': lat,
+                        'longitude': lon
+                    })
+                
+                # Calculate min/max corners in lat/lon
+                min_corner_latlon = None
+                max_corner_latlon = None
+                if transformer:
+                    try:
+                        min_e = min(c['easting'] for c in bbox_world_corners)
+                        min_n = min(c['northing'] for c in bbox_world_corners)
+                        max_e = max(c['easting'] for c in bbox_world_corners)
+                        max_n = max(c['northing'] for c in bbox_world_corners)
+                        
+                        min_lon, min_lat = transformer.transform(min_e, min_n)
+                        max_lon, max_lat = transformer.transform(max_e, max_n)
+                        
+                        min_corner_latlon = {'latitude': min_lat, 'longitude': min_lon}
+                        max_corner_latlon = {'latitude': max_lat, 'longitude': max_lon}
+                    except Exception as e:
+                        print(f"Warning: Could not transform min/max corners: {e}")
+                
+                # Add to analysis result
+                analysis_result['bounding_box_world'] = {
+                    'corners': bbox_world_corners,
+                    'min': {
+                        'easting': min(c['easting'] for c in bbox_world_corners),
+                        'northing': min(c['northing'] for c in bbox_world_corners),
+                        'elevation': bounds['min_z'] + (orth_height if orth_height else 0),
+                        'latitude': min_corner_latlon['latitude'] if min_corner_latlon else None,
+                        'longitude': min_corner_latlon['longitude'] if min_corner_latlon else None
+                    },
+                    'max': {
+                        'easting': max(c['easting'] for c in bbox_world_corners),
+                        'northing': max(c['northing'] for c in bbox_world_corners),
+                        'elevation': bounds['max_z'] + (orth_height if orth_height else 0),
+                        'latitude': max_corner_latlon['latitude'] if max_corner_latlon else None,
+                        'longitude': max_corner_latlon['longitude'] if max_corner_latlon else None
+                    },
+                    'crs': crs_name,
+                    'description': 'Bounding box of the IFC building in world coordinates (Easting/Northing) and WGS84 (Lat/Long)'
+                }
+                
+            except Exception as e:
+                print(f"Warning: Error calculating bounding box in world coordinates: {e}")
+        
+        # Clean up temporary file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        
+        print("==========================================")
+        response = jsonify(analysis_result)
+        response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response
+        
+    except Exception as e:
+        # Clean up temporary file on error
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
+            
+        error_msg = f'Error analyzing IFC file: {str(e)}'
+        print(f"❌ {error_msg}")
+        error_response = jsonify({
+            'error': error_msg,
+            'is_georeferenced': False
+        })
+        error_response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+        error_response.headers.add("Access-Control-Allow-Credentials", "true")
+        return error_response, 500
 
 @app.route('/api/ifc-analysis/<filename>')
 def analyze_ifc_api(filename):
