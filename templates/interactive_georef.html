@@ -412,7 +412,7 @@
                 </div>
                 <div class="panel-content">
                     <div class="instruction" id="instruction">
-                        First, upload your IFC file, then click on 3 or more points in your building that you can easily identify.
+                        First, upload your IFC file, then click on exactly 3 points in your building that you can easily identify.
                         These should be corners, reference points, or distinct features.
                     </div>
                     
@@ -685,6 +685,12 @@
         }
         
         function onBuildingClick(event) {
+            // Limit to maximum 3 points
+            if (buildingPoints.length >= 3) {
+                alert('Maximum 3 points allowed. Please clear existing points if you want to select new ones.');
+                return;
+            }
+            
             // Find the building floor plan div (the actual clickable area)
             const buildingDiv = event.target.closest('.viewer-container').querySelector('div[style*="border: 2px dashed"]');
             if (!buildingDiv) return;
@@ -737,6 +743,12 @@
         
         function onMapClick(e) {
             if (currentStep !== 2) return;
+            
+            // Limit to maximum 3 points
+            if (mapPoints.length >= 3) {
+                alert('Maximum 3 points allowed. Please clear existing points if you want to select new ones.');
+                return;
+            }
             
             const latlng = e.latlng;
             
@@ -926,8 +938,8 @@
         }
         
         function nextStep() {
-            if (buildingPoints.length < 3) {
-                alert('Please select at least 3 points on the building first.');
+            if (buildingPoints.length !== 3) {
+                alert('Please select exactly 3 points on the building first.');
                 return;
             }
             
@@ -973,11 +985,11 @@
         }
         
         function updateUI() {
-            // Update button states
-            document.getElementById('next-step').disabled = buildingPoints.length < 3;
+            // Update button states - require exactly 3 points
+            document.getElementById('next-step').disabled = buildingPoints.length !== 3;
             document.getElementById('clear-map').disabled = mapPoints.length === 0;
             document.getElementById('generate-config').disabled = 
-                buildingPoints.length !== mapPoints.length || buildingPoints.length < 3;
+                buildingPoints.length !== mapPoints.length || buildingPoints.length !== 3;
             
             // Update coordinates table
             updateCoordinatesTable();
@@ -1018,8 +1030,8 @@
         }
         
         function generateConfig() {
-            if (buildingPoints.length !== mapPoints.length || buildingPoints.length < 3) {
-                alert('Please ensure you have the same number of building and map points (minimum 3).');
+            if (buildingPoints.length !== 3 || mapPoints.length !== 3) {
+                alert('Please ensure you have exactly 3 building points and 3 map points.');
                 return;
             }
             
