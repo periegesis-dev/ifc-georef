@@ -452,10 +452,9 @@
                 <div class="controls">
                     <label for="epsg-select">Coordinate System:</label>
                     <select id="epsg-select">
-                        <option value="32632">EPSG:32632 (WGS84 UTM 32N - Central Europe)</option>
-                        <option value="32643">EPSG:32643 (WGS84 UTM 43N - Pakistan)</option>
-                        <option value="3857">EPSG:3857 (Web Mercator)</option>
+                        <option value="2056" selected>EPSG:2056 (CH1903+ / LV95 - Switzerland)</option>
                     </select>
+                    <!-- <button class="btn" onclick="testTransformation()" style="background: #666;">Test Transform</button> -->
                     <button class="btn btn-danger" onclick="clearMapPoints()" disabled id="clear-map">Clear Map Points</button>
                     <button class="btn btn-success" onclick="generateConfig()" disabled id="generate-config">Generate Configuration</button>
                 </div>
@@ -495,6 +494,9 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     
+    <!-- Include Proj4js for coordinate transformations -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
+    
     <!-- Include Three.js for 3D model viewing -->
     <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
     <script src="https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
@@ -510,6 +512,13 @@
         let ifcBounds = null;
         
         document.addEventListener('DOMContentLoaded', function() {
+            // Check if proj4 is loaded
+            if (typeof proj4 === 'undefined') {
+                console.error('Proj4js library failed to load!');
+            } else {
+                console.log('Proj4js library loaded successfully');
+            }
+            
             initializeMap();
             setupEventListeners();
             
@@ -736,26 +745,37 @@
             
             let easting, northing;
             
+            // Define proj4 coordinate systems
+            if (typeof proj4 !== 'undefined') {
+                // Define EPSG:2056 (Swiss CH1903+ / LV95) - Official definition
+                // Using the correct parameters for CH1903+ coordinate system
+                proj4.defs("EPSG:2056", "+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs");
+                
+                // Define other coordinate systems
+                proj4.defs("EPSG:32632", "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs");
+                proj4.defs("EPSG:32643", "+proj=utm +zone=43 +datum=WGS84 +units=m +no_defs");
+                proj4.defs("EPSG:3857", "+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wgs84 +no_defs");
+            }
+            
             if (epsg === '2056') {
-                // CH1903+ / LV95 coordinate system for Switzerland
-                // This is a simplified approximation for demonstration
-                // In production, use a proper coordinate transformation library
-                const lat = latlng.lat;
-                const lng = latlng.lng;
-                
-                // Approximate transformation to CH1903+ / LV95
-                // Reference point: Bern (46.95°N, 7.44°E) ≈ (2600000, 1200000)
-                const lat0 = 46.95; // Reference latitude
-                const lng0 = 7.44;  // Reference longitude
-                const e0 = 2600000; // Reference easting
-                const n0 = 1200000; // Reference northing
-                
-                // Approximate conversion (simplified)
-                const dlat = lat - lat0;
-                const dlng = lng - lng0;
-                
-                easting = e0 + dlng * 111320 * Math.cos(lat * Math.PI / 180);
-                northing = n0 + dlat * 110540;
+                // Use proj4js for accurate transformation
+                if (typeof proj4 !== 'undefined') {
+                    try {
+                        // proj4 expects [longitude, latitude] order and returns [x, y]
+                        const coords = proj4('EPSG:4326', 'EPSG:2056', [latlng.lng, latlng.lat]);
+                        easting = coords[0];
+                        northing = coords[1];
+                        console.log('EPSG:2056 transformation:', latlng.lat, latlng.lng, '->', easting, northing);
+                    } catch (error) {
+                        console.error('Proj4 transformation error:', error);
+                        alert('Error transforming coordinates: ' + error.message);
+                        return;
+                    }
+                } else {
+                    // Fallback to simple approximation if proj4 is not loaded
+                    alert('Coordinate transformation library not loaded. Please refresh the page.');
+                    return;
+                }
                 
             } else if (epsg === '21781') {
                 // CH1903 / LV03 coordinate system for Switzerland (legacy)
@@ -776,68 +796,81 @@
                 northing = n0 + dlat * 110540;
                 
             } else if (epsg === '32632') {
-                // UTM Zone 32N for Central Europe
-                const lat = latlng.lat;
-                const lng = latlng.lng;
-                
-                // UTM Zone 32N (central meridian 9°E) conversion
-                const k0 = 0.9996;
-                const a = 6378137; // WGS84 semi-major axis
-                const f = 1/298.257223563; // WGS84 flattening
-                const e = Math.sqrt(2*f - f*f); // eccentricity
-                
-                const latRad = lat * Math.PI / 180;
-                const lngRad = lng * Math.PI / 180;
-                const centralMeridian = 9 * Math.PI / 180; // UTM Zone 32N
-                
-                const deltaLng = lngRad - centralMeridian;
-                
-                const N = a / Math.sqrt(1 - e*e * Math.sin(latRad)*Math.sin(latRad));
-                const T = Math.tan(latRad) * Math.tan(latRad);
-                const C = (e*e/(1-e*e)) * Math.cos(latRad) * Math.cos(latRad);
-                const A = Math.cos(latRad) * deltaLng;
-                
-                const M = a * ((1 - e*e/4 - 3*e*e*e*e/64 - 5*Math.pow(e,6)/256) * latRad
-                           - (3*e*e/8 + 3*e*e*e*e/32 + 45*Math.pow(e,6)/1024) * Math.sin(2*latRad)
-                           + (15*e*e*e*e/256 + 45*Math.pow(e,6)/1024) * Math.sin(4*latRad)
-                           - (35*Math.pow(e,6)/3072) * Math.sin(6*latRad));
-                
-                easting = k0 * N * (A + (1-T+C)*A*A*A/6 + (5-18*T+T*T+72*C-58*(e*e/(1-e*e)))*Math.pow(A,5)/120) + 500000;
-                northing = k0 * (M + N*Math.tan(latRad)*(A*A/2 + (5-T+9*C+4*C*C)*Math.pow(A,4)/24 + (61-58*T+T*T+600*C-330*(e*e/(1-e*e)))*Math.pow(A,6)/720));
-                
-                // Ensure we're in the northern hemisphere
-                if (northing < 0) northing += 10000000;
+                // UTM Zone 32N for Central Europe - use proj4js
+                if (typeof proj4 !== 'undefined') {
+                    const coords = proj4('EPSG:4326', 'EPSG:32632', [latlng.lng, latlng.lat]);
+                    easting = coords[0];
+                    northing = coords[1];
+                } else {
+                    // Fallback to manual calculation
+                    const lat = latlng.lat;
+                    const lng = latlng.lng;
+                    
+                    // UTM Zone 32N (central meridian 9°E) conversion
+                    const k0 = 0.9996;
+                    const a = 6378137; // WGS84 semi-major axis
+                    const f = 1/298.257223563; // WGS84 flattening
+                    const e = Math.sqrt(2*f - f*f); // eccentricity
+                    
+                    const latRad = lat * Math.PI / 180;
+                    const lngRad = lng * Math.PI / 180;
+                    const centralMeridian = 9 * Math.PI / 180; // UTM Zone 32N
+                    
+                    const deltaLng = lngRad - centralMeridian;
+                    
+                    const N = a / Math.sqrt(1 - e*e * Math.sin(latRad)*Math.sin(latRad));
+                    const T = Math.tan(latRad) * Math.tan(latRad);
+                    const C = (e*e/(1-e*e)) * Math.cos(latRad) * Math.cos(latRad);
+                    const A = Math.cos(latRad) * deltaLng;
+                    
+                    const M = a * ((1 - e*e/4 - 3*e*e*e*e/64 - 5*Math.pow(e,6)/256) * latRad
+                               - (3*e*e/8 + 3*e*e*e*e/32 + 45*Math.pow(e,6)/1024) * Math.sin(2*latRad)
+                               + (15*e*e*e*e/256 + 45*Math.pow(e,6)/1024) * Math.sin(4*latRad)
+                               - (35*Math.pow(e,6)/3072) * Math.sin(6*latRad));
+                    
+                    easting = k0 * N * (A + (1-T+C)*A*A*A/6 + (5-18*T+T*T+72*C-58*(e*e/(1-e*e)))*Math.pow(A,5)/120) + 500000;
+                    northing = k0 * (M + N*Math.tan(latRad)*(A*A/2 + (5-T+9*C+4*C*C)*Math.pow(A,4)/24 + (61-58*T+T*T+600*C-330*(e*e/(1-e*e)))*Math.pow(A,6)/720));
+                    
+                    // Ensure we're in the northern hemisphere
+                    if (northing < 0) northing += 10000000;
+                }
                 
             } else if (epsg === '32643') {
-                // Simple and accurate UTM conversion for Pakistan
-                // Using a more direct approach that matches the backend transformation
-                const lat = latlng.lat;
-                const lng = latlng.lng;
-                
-                // UTM Zone 43N (central meridian 75°E) conversion
-                const k0 = 0.9996;
-                const a = 6378137; // WGS84 semi-major axis
-                const f = 1/298.257223563; // WGS84 flattening
-                const e = Math.sqrt(2*f - f*f); // eccentricity
-                
-                const latRad = lat * Math.PI / 180;
-                const lngRad = lng * Math.PI / 180;
-                const centralMeridian = 75 * Math.PI / 180; // UTM Zone 43N
-                
-                const deltaLng = lngRad - centralMeridian;
-                
-                const N = a / Math.sqrt(1 - e*e * Math.sin(latRad)*Math.sin(latRad));
-                const T = Math.tan(latRad) * Math.tan(latRad);
-                const C = (e*e/(1-e*e)) * Math.cos(latRad) * Math.cos(latRad);
-                const A = Math.cos(latRad) * deltaLng;
-                
-                const M = a * ((1 - e*e/4 - 3*e*e*e*e/64 - 5*Math.pow(e,6)/256) * latRad
-                           - (3*e*e/8 + 3*e*e*e*e/32 + 45*Math.pow(e,6)/1024) * Math.sin(2*latRad)
-                           + (15*e*e*e*e/256 + 45*Math.pow(e,6)/1024) * Math.sin(4*latRad)
-                           - (35*Math.pow(e,6)/3072) * Math.sin(6*latRad));
-                
-                easting = k0 * N * (A + (1-T+C)*A*A*A/6 + (5-18*T+T*T+72*C-58*(e*e/(1-e*e)))*Math.pow(A,5)/120) + 500000;
-                northing = k0 * (M + N*Math.tan(latRad)*(A*A/2 + (5-T+9*C+4*C*C)*A*A*A*A/24 + (61-58*T+T*T+600*C-330*(e*e/(1-e*e)))*Math.pow(A,6)/720));
+                // UTM Zone 43N for Pakistan - use proj4js
+                if (typeof proj4 !== 'undefined') {
+                    const coords = proj4('EPSG:4326', 'EPSG:32643', [latlng.lng, latlng.lat]);
+                    easting = coords[0];
+                    northing = coords[1];
+                } else {
+                    // Fallback to manual calculation
+                    const lat = latlng.lat;
+                    const lng = latlng.lng;
+                    
+                    // UTM Zone 43N (central meridian 75°E) conversion
+                    const k0 = 0.9996;
+                    const a = 6378137; // WGS84 semi-major axis
+                    const f = 1/298.257223563; // WGS84 flattening
+                    const e = Math.sqrt(2*f - f*f); // eccentricity
+                    
+                    const latRad = lat * Math.PI / 180;
+                    const lngRad = lng * Math.PI / 180;
+                    const centralMeridian = 75 * Math.PI / 180; // UTM Zone 43N
+                    
+                    const deltaLng = lngRad - centralMeridian;
+                    
+                    const N = a / Math.sqrt(1 - e*e * Math.sin(latRad)*Math.sin(latRad));
+                    const T = Math.tan(latRad) * Math.tan(latRad);
+                    const C = (e*e/(1-e*e)) * Math.cos(latRad) * Math.cos(latRad);
+                    const A = Math.cos(latRad) * deltaLng;
+                    
+                    const M = a * ((1 - e*e/4 - 3*e*e*e*e/64 - 5*Math.pow(e,6)/256) * latRad
+                               - (3*e*e/8 + 3*e*e*e*e/32 + 45*Math.pow(e,6)/1024) * Math.sin(2*latRad)
+                               + (15*e*e*e*e/256 + 45*Math.pow(e,6)/1024) * Math.sin(4*latRad)
+                               - (35*Math.pow(e,6)/3072) * Math.sin(6*latRad));
+                    
+                    easting = k0 * N * (A + (1-T+C)*A*A*A/6 + (5-18*T+T*T+72*C-58*(e*e/(1-e*e)))*Math.pow(A,5)/120) + 500000;
+                    northing = k0 * (M + N*Math.tan(latRad)*(A*A/2 + (5-T+9*C+4*C*C)*A*A*A*A/24 + (61-58*T+T*T+600*C-330*(e*e/(1-e*e)))*Math.pow(A,6)/720));
+                }
                 
             } else {
                 // Simplified conversion for other systems
@@ -1112,6 +1145,25 @@
             // Try to get filename from URL parameters or previous selection
             const urlParams = new URLSearchParams(window.location.search);
             return urlParams.get('filename') || sessionStorage.getItem('selectedFilename');
+        }
+        
+        function testTransformation() {
+            // Test EPSG:2056 transformation with a known point
+            // Zurich center: 47.3769°N, 8.5417°E should be approximately E=2683000, N=1248000
+            const testLat = 47.3769;
+            const testLng = 8.5417;
+            
+            if (typeof proj4 !== 'undefined') {
+                proj4.defs("EPSG:2056", "+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs");
+                const coords = proj4('EPSG:4326', 'EPSG:2056', [testLng, testLat]);
+                console.log('Test transformation for Zurich:');
+                console.log('Input: Lat=' + testLat + ', Lng=' + testLng);
+                console.log('Output: E=' + coords[0].toFixed(2) + ', N=' + coords[1].toFixed(2));
+                console.log('Expected approximately: E=2683000, N=1248000');
+                alert('Test transformation:\nInput: ' + testLat + '°N, ' + testLng + '°E\nOutput: E=' + coords[0].toFixed(2) + ', N=' + coords[1].toFixed(2) + '\n\nCheck console for details.');
+            } else {
+                alert('Proj4js not loaded!');
+            }
         }
     </script>
 </body>

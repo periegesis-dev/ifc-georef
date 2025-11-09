@@ -14,3 +14,4 @@ itsdangerous==2.1.2
 certifi==2023.7.22
 requests==2.31.0
 python-dotenv==1.0.0
+flask-cors==6.0.1
