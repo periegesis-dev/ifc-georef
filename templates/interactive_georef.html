@@ -442,9 +442,28 @@
                 </div>
                 <div class="panel-content">
                     <div class="instruction" id="map-instruction" style="display: none;">
-                        Click on the map to set the geographic location for each selected building point.
-                        Click in the same order as you selected points on the building.
+                        Click on the map to set the geographic location for each selected building point, or enter coordinates manually below.
+                        Select points in the same order as you selected them on the building.
                     </div>
+                    
+                    <!-- Manual coordinate entry -->
+                    <div id="manual-entry" style="display: none; background: #FCFFE7; padding: 16px; border-radius: 8px; margin-bottom: 16px; border: 2px solid #B0C70D;">
+                        <h4 style="margin: 0 0 12px 0; color: #111827; font-size: 14px;">Add Point Manually (Point <span id="current-point-number">1</span>/3)</h4>
+                        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: end;">
+                            <div style="flex: 1; min-width: 120px;">
+                                <label for="manual-lat" style="display: block; margin-bottom: 4px;">Latitude (°N):</label>
+                                <input type="number" id="manual-lat" step="0.000001" placeholder="e.g., 47.3769" 
+                                       style="width: 100%; padding: 8px; border: 2px solid #D1D5DB; border-radius: 6px;">
+                            </div>
+                            <div style="flex: 1; min-width: 120px;">
+                                <label for="manual-lng" style="display: block; margin-bottom: 4px;">Longitude (°E):</label>
+                                <input type="number" id="manual-lng" step="0.000001" placeholder="e.g., 8.5417" 
+                                       style="width: 100%; padding: 8px; border: 2px solid #D1D5DB; border-radius: 6px;">
+                            </div>
+                            <button class="btn" onclick="addManualPoint()" style="padding: 8px 16px;">Add Point</button>
+                        </div>
+                    </div>
+                    
                     <div class="map-container" id="map-container">
                         <div id="map" style="width: 100%; height: 100%;"></div>
                     </div>
@@ -923,6 +942,132 @@
                 .bindPopup(`Point ${mapPoints.length}<br>Lat: ${latlng.lat.toFixed(6)}<br>Lng: ${latlng.lng.toFixed(6)}<br>UTM: ${easting.toFixed(2)}, ${northing.toFixed(2)}`);
             
             updateUI();
+            updateManualEntryUI();
+        }
+        
+        // Function to add point manually by entering lat/lng
+        function addManualPoint() {
+            if (mapPoints.length >= 3) {
+                alert('Maximum 3 points allowed. Please clear existing points if you want to select new ones.');
+                return;
+            }
+            
+            const latInput = document.getElementById('manual-lat');
+            const lngInput = document.getElementById('manual-lng');
+            
+            const lat = parseFloat(latInput.value);
+            const lng = parseFloat(lngInput.value);
+            
+            // Validate inputs
+            if (isNaN(lat) || isNaN(lng)) {
+                alert('Please enter valid latitude and longitude values.');
+                return;
+            }
+            
+            if (lat < -90 || lat > 90) {
+                alert('Latitude must be between -90 and 90 degrees.');
+                return;
+            }
+            
+            if (lng < -180 || lng > 180) {
+                alert('Longitude must be between -180 and 180 degrees.');
+                return;
+            }
+            
+            // Create a latlng object and process it like a map click
+            const latlng = { lat: lat, lng: lng };
+            
+            // Convert to selected coordinate system
+            const epsg = document.getElementById('epsg-select').value;
+            let easting, northing;
+            
+            // Define proj4 coordinate systems
+            if (typeof proj4 !== 'undefined') {
+                proj4.defs("EPSG:2056", "+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs");
+            }
+            
+            if (epsg === '2056') {
+                if (typeof proj4 !== 'undefined') {
+                    try {
+                        const coords = proj4('EPSG:4326', 'EPSG:2056', [lng, lat]);
+                        easting = coords[0];
+                        northing = coords[1];
+                        console.log('Manual EPSG:2056 transformation:', lat, lng, '->', easting, northing);
+                    } catch (error) {
+                        console.error('Proj4 transformation error:', error);
+                        alert('Error transforming coordinates: ' + error.message);
+                        return;
+                    }
+                } else {
+                    alert('Coordinate transformation library not loaded. Please refresh the page.');
+                    return;
+                }
+            } else {
+                // Fallback for other coordinate systems
+                easting = lng * 111320;
+                northing = lat * 110540;
+            }
+            
+            const elevation = 400; // Default elevation for Zurich area (Switzerland)
+            
+            // Validate distance from first point
+            if (mapPoints.length > 0) {
+                const firstPoint = mapPoints[0];
+                const distance = calculateDistance(firstPoint.latlng.lat, firstPoint.latlng.lng, lat, lng);
+                
+                if (distance > 1000) {
+                    if (!confirm(`Warning: This point is ${(distance/1000).toFixed(2)}km away from the first point. This might make your building appear very large. Continue anyway?`)) {
+                        return;
+                    }
+                }
+            }
+            
+            const point = {
+                latlng: latlng,
+                coordinates: {
+                    easting: easting,
+                    northing: northing,
+                    elevation: elevation
+                },
+                epsg: epsg
+            };
+            
+            mapPoints.push(point);
+            
+            // Add marker to map
+            const marker = L.marker([lat, lng])
+                .addTo(map)
+                .bindPopup(`Point ${mapPoints.length}<br>Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}<br>E: ${easting.toFixed(2)}, N: ${northing.toFixed(2)}`);
+            
+            // Pan map to the new marker
+            map.setView([lat, lng], map.getZoom());
+            
+            // Clear input fields
+            latInput.value = '';
+            lngInput.value = '';
+            
+            updateUI();
+            updateManualEntryUI();
+        }
+        
+        // Update manual entry UI to show current point number
+        function updateManualEntryUI() {
+            const pointNumber = mapPoints.length + 1;
+            const pointNumberSpan = document.getElementById('current-point-number');
+            if (pointNumberSpan) {
+                pointNumberSpan.textContent = pointNumber;
+            }
+            
+            // Disable manual entry if we have 3 points already
+            const manualLat = document.getElementById('manual-lat');
+            const manualLng = document.getElementById('manual-lng');
+            if (mapPoints.length >= 3) {
+                if (manualLat) manualLat.disabled = true;
+                if (manualLng) manualLng.disabled = true;
+            } else {
+                if (manualLat) manualLat.disabled = false;
+                if (manualLng) manualLng.disabled = false;
+            }
         }
         
         // Helper function to calculate distance between two lat/lng points
@@ -958,6 +1103,10 @@
             // Show map instruction
             document.getElementById('map-instruction').style.display = 'block';
             
+            // Show manual entry form
+            document.getElementById('manual-entry').style.display = 'block';
+            updateManualEntryUI();
+            
             // Update instruction
             document.getElementById('instruction').innerHTML = `
                 <strong>Building points selected: ${buildingPoints.length}</strong><br>
@@ -981,7 +1130,14 @@
                     map.removeLayer(layer);
                 }
             });
+            // Clear manual input fields
+            const manualLat = document.getElementById('manual-lat');
+            const manualLng = document.getElementById('manual-lng');
+            if (manualLat) manualLat.value = '';
+            if (manualLng) manualLng.value = '';
+            
             updateUI();
+            updateManualEntryUI();
         }
         
         function updateUI() {
