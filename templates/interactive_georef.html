@@ -267,6 +267,31 @@
             background-color: #f0f8e0;
         }
         
+        .coord-input {
+            width: 100%;
+            padding: 8px;
+            border: 2px solid #D1D5DB;
+            border-radius: 6px;
+            font-size: 14px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+        
+        .coord-input:focus {
+            outline: none;
+            border-color: #B0C70D;
+            background-color: #FCFFE7;
+        }
+        
+        .coord-input:hover {
+            border-color: #B0C70D;
+        }
+        
+        .latlng-display {
+            font-size: 13px;
+            color: #6B7280;
+        }
+        
         .point-marker {
             position: absolute;
             width: 14px;
@@ -412,8 +437,9 @@
                 </div>
                 <div class="panel-content">
                     <div class="instruction" id="instruction">
-                        First, upload your IFC file, then click on exactly 3 points in your building that you can easily identify.
-                        These should be corners, reference points, or distinct features.
+                        First, upload your IFC file, then select exactly 3 control points. You can either:
+                        <br>• <strong>Click</strong> on the building to add points (coordinates will populate in the table below), OR
+                        <br>• <strong>Enter X, Y, Z values</strong> manually in the table (red markers will appear automatically)
                     </div>
                     
                     <div style="margin-bottom: 15px;">
@@ -442,8 +468,9 @@
                 </div>
                 <div class="panel-content">
                     <div class="instruction" id="map-instruction" style="display: none;">
-                        Click on the map to set the geographic location for each selected building point, or enter coordinates manually below.
-                        Select points in the same order as you selected them on the building.
+                        Set geographic coordinates for each building point. You can either:
+                        <br>• <strong>Click on the map</strong> to add points (coordinates will populate in the table below), OR
+                        <br>• <strong>Enter Easting, Northing, Elevation</strong> manually in the table (map markers will appear automatically)
                     </div>
                     
                     <!-- Manual coordinate entry -->
@@ -481,7 +508,7 @@
         </div>
         
         <div class="bottom-controls">
-            <table class="coordinates-table" id="coordinates-table" style="display: none;">
+            <table class="coordinates-table" id="coordinates-table">
                 <thead>
                     <tr>
                         <th rowspan="2">Point</th>
@@ -499,6 +526,36 @@
                     </tr>
                 </thead>
                 <tbody id="coordinates-body">
+                    <tr>
+                        <td>P1</td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="0" data-axis="x" placeholder="X"></td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="0" data-axis="y" placeholder="Y"></td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="0" data-axis="z" placeholder="Z"></td>
+                        <td><input type="number" step="any" class="coord-input map-coord" data-point="0" data-axis="easting" placeholder="Easting"></td>
+                        <td><input type="number" step="any" class="coord-input map-coord" data-point="0" data-axis="northing" placeholder="Northing"></td>
+                        <td><input type="number" step="any" class="coord-input map-coord" data-point="0" data-axis="elevation" placeholder="Elevation"></td>
+                        <td class="latlng-display">-</td>
+                    </tr>
+                    <tr>
+                        <td>P2</td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="1" data-axis="x" placeholder="X"></td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="1" data-axis="y" placeholder="Y"></td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="1" data-axis="z" placeholder="Z"></td>
+                        <td><input type="number" step="any" class="coord-input map-coord" data-point="1" data-axis="easting" placeholder="Easting"></td>
+                        <td><input type="number" step="any" class="coord-input map-coord" data-point="1" data-axis="northing" placeholder="Northing"></td>
+                        <td><input type="number" step="any" class="coord-input map-coord" data-point="1" data-axis="elevation" placeholder="Elevation"></td>
+                        <td class="latlng-display">-</td>
+                    </tr>
+                    <tr>
+                        <td>P3</td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="2" data-axis="x" placeholder="X"></td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="2" data-axis="y" placeholder="Y"></td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="2" data-axis="z" placeholder="Z"></td>
+                        <td><input type="number" step="any" class="coord-input map-coord" data-point="2" data-axis="easting" placeholder="Easting"></td>
+                        <td><input type="number" step="any" class="coord-input map-coord" data-point="2" data-axis="northing" placeholder="Northing"></td>
+                        <td><input type="number" step="any" class="coord-input map-coord" data-point="2" data-axis="elevation" placeholder="Elevation"></td>
+                        <td class="latlng-display">-</td>
+                    </tr>
                 </tbody>
             </table>
             
@@ -577,6 +634,15 @@
         function setupEventListeners() {
             document.getElementById('building-viewer').addEventListener('click', onBuildingClick);
             document.getElementById('file-upload').addEventListener('change', handleFileUpload);
+            
+            // Add event listeners for table inputs
+            document.querySelectorAll('.building-coord').forEach(input => {
+                input.addEventListener('input', handleBuildingCoordInput);
+            });
+            
+            document.querySelectorAll('.map-coord').forEach(input => {
+                input.addEventListener('input', handleMapCoordInput);
+            });
         }
         
         function handleFileUpload(event) {
@@ -704,15 +770,18 @@
         }
         
         function onBuildingClick(event) {
-            // Limit to maximum 3 points
-            if (buildingPoints.length >= 3) {
-                alert('Maximum 3 points allowed. Please clear existing points if you want to select new ones.');
-                return;
-            }
-            
             // Find the building floor plan div (the actual clickable area)
             const buildingDiv = event.target.closest('.viewer-container').querySelector('div[style*="border: 2px dashed"]');
             if (!buildingDiv) return;
+            
+            // Don't add points if we already have 3
+            const existingPointIndex = buildingPoints.findIndex(p => !p || Object.keys(p.building).length === 0);
+            const nextIndex = existingPointIndex !== -1 ? existingPointIndex : buildingPoints.length;
+            
+            if (nextIndex >= 3) {
+                alert('Maximum 3 points allowed. Please clear existing points if you want to select new ones.');
+                return;
+            }
             
             const rect = buildingDiv.getBoundingClientRect();
             const x = event.clientX - rect.left;
@@ -747,14 +816,21 @@
                 building: {x: buildingX, y: buildingY, z: buildingZ}
             };
             
-            buildingPoints.push(point);
+            buildingPoints[nextIndex] = point;
+            
+            // Remove existing marker for this point if it exists
+            const existingMarker = buildingDiv.querySelector(`.building-point[data-point="${nextIndex}"]`);
+            if (existingMarker) {
+                existingMarker.remove();
+            }
             
             // Add visual marker positioned relative to the building div
             const marker = document.createElement('div');
             marker.className = 'point-marker building-point';
+            marker.setAttribute('data-point', nextIndex);
             marker.style.left = x + 'px';
             marker.style.top = y + 'px';
-            marker.title = `P${buildingPoints.length}: (${buildingX.toFixed(6)}, ${buildingY.toFixed(6)}, ${buildingZ.toFixed(6)})`;
+            marker.title = `P${nextIndex + 1}: (${buildingX.toFixed(6)}, ${buildingY.toFixed(6)}, ${buildingZ.toFixed(6)})`;
             buildingDiv.appendChild(marker);
             
             updateUI();
@@ -763,8 +839,11 @@
         function onMapClick(e) {
             if (currentStep !== 2) return;
             
-            // Limit to maximum 3 points
-            if (mapPoints.length >= 3) {
+            // Find next available slot or stop at 3
+            const existingPointIndex = mapPoints.findIndex(p => !p || Object.keys(p.coordinates).length === 0);
+            const nextIndex = existingPointIndex !== -1 ? existingPointIndex : mapPoints.length;
+            
+            if (nextIndex >= 3) {
                 alert('Maximum 3 points allowed. Please clear existing points if you want to select new ones.');
                 return;
             }
@@ -934,12 +1013,19 @@
                 epsg: epsg
             };
             
-            mapPoints.push(point);
+            mapPoints[nextIndex] = point;
+            
+            // Remove existing marker for this point if it exists
+            map.eachLayer(function(layer) {
+                if (layer instanceof L.Marker && layer.options.pointIndex === nextIndex) {
+                    map.removeLayer(layer);
+                }
+            });
             
             // Add marker to map
-            const marker = L.marker([latlng.lat, latlng.lng])
+            const marker = L.marker([latlng.lat, latlng.lng], { pointIndex: nextIndex })
                 .addTo(map)
-                .bindPopup(`Point ${mapPoints.length}<br>Lat: ${latlng.lat.toFixed(6)}<br>Lng: ${latlng.lng.toFixed(6)}<br>UTM: ${easting.toFixed(2)}, ${northing.toFixed(2)}`);
+                .bindPopup(`Point ${nextIndex + 1}<br>Lat: ${latlng.lat.toFixed(6)}<br>Lng: ${latlng.lng.toFixed(6)}<br>UTM: ${easting.toFixed(2)}, ${northing.toFixed(2)}`);
             
             updateUI();
             updateManualEntryUI();
@@ -947,7 +1033,10 @@
         
         // Function to add point manually by entering lat/lng
         function addManualPoint() {
-            if (mapPoints.length >= 3) {
+            const existingPointIndex = mapPoints.findIndex(p => !p || Object.keys(p.coordinates).length === 0);
+            const nextIndex = existingPointIndex !== -1 ? existingPointIndex : mapPoints.length;
+            
+            if (nextIndex >= 3) {
                 alert('Maximum 3 points allowed. Please clear existing points if you want to select new ones.');
                 return;
             }
@@ -1032,12 +1121,19 @@
                 epsg: epsg
             };
             
-            mapPoints.push(point);
+            mapPoints[nextIndex] = point;
+            
+            // Remove existing marker for this point if it exists
+            map.eachLayer(function(layer) {
+                if (layer instanceof L.Marker && layer.options.pointIndex === nextIndex) {
+                    map.removeLayer(layer);
+                }
+            });
             
             // Add marker to map
-            const marker = L.marker([lat, lng])
+            const marker = L.marker([lat, lng], { pointIndex: nextIndex })
                 .addTo(map)
-                .bindPopup(`Point ${mapPoints.length}<br>Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}<br>E: ${easting.toFixed(2)}, N: ${northing.toFixed(2)}`);
+                .bindPopup(`Point ${nextIndex + 1}<br>Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}<br>E: ${easting.toFixed(2)}, N: ${northing.toFixed(2)}`);
             
             // Pan map to the new marker
             map.setView([lat, lng], map.getZoom());
@@ -1082,6 +1178,157 @@
             return R * c;
         }
         
+        // Handle manual building coordinate entry from table
+        function handleBuildingCoordInput(event) {
+            const input = event.target;
+            const pointIndex = parseInt(input.dataset.point);
+            const axis = input.dataset.axis;
+            const value = parseFloat(input.value);
+            
+            if (isNaN(value)) return;
+            
+            // Initialize or update the building point
+            if (!buildingPoints[pointIndex]) {
+                buildingPoints[pointIndex] = {
+                    screen: {x: 0, y: 0},
+                    building: {x: 0, y: 0, z: 0}
+                };
+            }
+            
+            buildingPoints[pointIndex].building[axis] = value;
+            
+            // Check if all three coordinates are filled for this point
+            const xInput = document.querySelector(`.building-coord[data-point="${pointIndex}"][data-axis="x"]`);
+            const yInput = document.querySelector(`.building-coord[data-point="${pointIndex}"][data-axis="y"]`);
+            const zInput = document.querySelector(`.building-coord[data-point="${pointIndex}"][data-axis="z"]`);
+            
+            const x = parseFloat(xInput.value);
+            const y = parseFloat(yInput.value);
+            const z = parseFloat(zInput.value);
+            
+            if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+                // Update the building point with all coordinates
+                buildingPoints[pointIndex].building = {x: x, y: y, z: z};
+                
+                // Calculate screen position for visual marker
+                const buildingDiv = document.querySelector('.viewer-container div[style*="border: 2px dashed"]');
+                if (buildingDiv && ifcBounds) {
+                    const rect = buildingDiv.getBoundingClientRect();
+                    
+                    // Convert building coordinates back to screen coordinates
+                    const relX = (x - ifcBounds.min[0]) / ifcBounds.dimensions[0];
+                    const relY = (y - ifcBounds.min[1]) / ifcBounds.dimensions[1];
+                    
+                    const screenX = relX * rect.width;
+                    const screenY = (1 - relY) * rect.height; // Flip Y axis
+                    
+                    buildingPoints[pointIndex].screen = {x: screenX, y: screenY};
+                    
+                    // Remove existing marker for this point
+                    const existingMarker = buildingDiv.querySelector(`.building-point[data-point="${pointIndex}"]`);
+                    if (existingMarker) {
+                        existingMarker.remove();
+                    }
+                    
+                    // Add visual marker
+                    const marker = document.createElement('div');
+                    marker.className = 'point-marker building-point';
+                    marker.setAttribute('data-point', pointIndex);
+                    marker.style.left = screenX + 'px';
+                    marker.style.top = screenY + 'px';
+                    marker.title = `P${pointIndex + 1}: (${x.toFixed(6)}, ${y.toFixed(6)}, ${z.toFixed(6)})`;
+                    buildingDiv.appendChild(marker);
+                }
+                
+                updateUI();
+            }
+        }
+        
+        // Handle manual map coordinate entry from table
+        function handleMapCoordInput(event) {
+            const input = event.target;
+            const pointIndex = parseInt(input.dataset.point);
+            const axis = input.dataset.axis;
+            const value = parseFloat(input.value);
+            
+            if (isNaN(value)) return;
+            
+            // Initialize or update the map point
+            if (!mapPoints[pointIndex]) {
+                mapPoints[pointIndex] = {
+                    latlng: {lat: 0, lng: 0},
+                    coordinates: {easting: 0, northing: 0, elevation: 0},
+                    epsg: document.getElementById('epsg-select').value
+                };
+            }
+            
+            mapPoints[pointIndex].coordinates[axis] = value;
+            
+            // Check if easting and northing are filled for this point
+            const eastingInput = document.querySelector(`.map-coord[data-point="${pointIndex}"][data-axis="easting"]`);
+            const northingInput = document.querySelector(`.map-coord[data-point="${pointIndex}"][data-axis="northing"]`);
+            const elevationInput = document.querySelector(`.map-coord[data-point="${pointIndex}"][data-axis="elevation"]`);
+            
+            const easting = parseFloat(eastingInput.value);
+            const northing = parseFloat(northingInput.value);
+            const elevation = parseFloat(elevationInput.value) || 400;
+            
+            if (!isNaN(easting) && !isNaN(northing)) {
+                // Convert from projected coordinates back to lat/lng
+                const epsg = document.getElementById('epsg-select').value;
+                let lat, lng;
+                
+                if (typeof proj4 !== 'undefined') {
+                    try {
+                        // Ensure EPSG:2056 is defined
+                        proj4.defs("EPSG:2056", "+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs");
+                        
+                        // Transform from projected to WGS84
+                        const coords = proj4(`EPSG:${epsg}`, 'EPSG:4326', [easting, northing]);
+                        lng = coords[0];
+                        lat = coords[1];
+                    } catch (error) {
+                        console.error('Reverse transformation error:', error);
+                        return;
+                    }
+                } else {
+                    // Fallback approximation
+                    lng = easting / 111320;
+                    lat = northing / 110540;
+                }
+                
+                // Update the map point
+                mapPoints[pointIndex] = {
+                    latlng: {lat: lat, lng: lng},
+                    coordinates: {easting: easting, northing: northing, elevation: elevation},
+                    epsg: epsg
+                };
+                
+                // Update lat/lng display in table
+                const latlngCell = document.querySelectorAll('.latlng-display')[pointIndex];
+                if (latlngCell) {
+                    latlngCell.textContent = `${lat.toFixed(6)}°N, ${lng.toFixed(6)}°E`;
+                }
+                
+                // Remove existing marker for this point if it exists
+                map.eachLayer(function(layer) {
+                    if (layer instanceof L.Marker && layer.options.pointIndex === pointIndex) {
+                        map.removeLayer(layer);
+                    }
+                });
+                
+                // Add marker to map
+                const marker = L.marker([lat, lng], { pointIndex: pointIndex })
+                    .addTo(map)
+                    .bindPopup(`Point ${pointIndex + 1}<br>Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}<br>E: ${easting.toFixed(2)}, N: ${northing.toFixed(2)}`);
+                
+                // Pan map to show the marker
+                map.setView([lat, lng], map.getZoom());
+                
+                updateUI();
+            }
+        }
+        
         function nextStep() {
             if (buildingPoints.length !== 3) {
                 alert('Please select exactly 3 points on the building first.');
@@ -1120,6 +1367,12 @@
             buildingPoints = [];
             const markers = document.querySelectorAll('.building-point');
             markers.forEach(marker => marker.remove());
+            
+            // Clear building coordinate inputs in table
+            document.querySelectorAll('.building-coord').forEach(input => {
+                input.value = '';
+            });
+            
             updateUI();
         }
         
@@ -1135,6 +1388,16 @@
             const manualLng = document.getElementById('manual-lng');
             if (manualLat) manualLat.value = '';
             if (manualLng) manualLng.value = '';
+            
+            // Clear map coordinate inputs in table
+            document.querySelectorAll('.map-coord').forEach(input => {
+                input.value = '';
+            });
+            
+            // Clear lat/lng display
+            document.querySelectorAll('.latlng-display').forEach(cell => {
+                cell.textContent = '-';
+            });
             
             updateUI();
             updateManualEntryUI();
@@ -1152,36 +1415,34 @@
         }
         
         function updateCoordinatesTable() {
-            const table = document.getElementById('coordinates-table');
-            const tbody = document.getElementById('coordinates-body');
-            
-            if (buildingPoints.length > 0 || mapPoints.length > 0) {
-                table.style.display = 'table';
-                tbody.innerHTML = '';
+            // Update the input fields based on the clicked points
+            for (let i = 0; i < 3; i++) {
+                const buildingPoint = buildingPoints[i];
+                const mapPoint = mapPoints[i];
                 
-                const maxPoints = Math.max(buildingPoints.length, mapPoints.length);
-                
-                for (let i = 0; i < maxPoints; i++) {
-                    const row = document.createElement('tr');
+                // Update building coordinates
+                if (buildingPoint) {
+                    const xInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="x"]`);
+                    const yInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="y"]`);
+                    const zInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="z"]`);
                     
-                    const buildingPoint = buildingPoints[i];
-                    const mapPoint = mapPoints[i];
-                    
-                    row.innerHTML = `
-                        <td>P${i + 1}</td>
-                        <td>${buildingPoint ? buildingPoint.building.x.toFixed(3) : '-'}</td>
-                        <td>${buildingPoint ? buildingPoint.building.y.toFixed(3) : '-'}</td>
-                        <td>${buildingPoint ? buildingPoint.building.z.toFixed(3) : '-'}</td>
-                        <td>${mapPoint ? mapPoint.coordinates.easting.toFixed(2) : '-'}</td>
-                        <td>${mapPoint ? mapPoint.coordinates.northing.toFixed(2) : '-'}</td>
-                        <td>${mapPoint ? mapPoint.coordinates.elevation.toFixed(1) : '-'}</td>
-                        <td>${mapPoint ? `${mapPoint.latlng.lat.toFixed(6)}°N, ${mapPoint.latlng.lng.toFixed(6)}°E` : '-'}</td>
-                    `;
-                    
-                    tbody.appendChild(row);
+                    if (xInput) xInput.value = buildingPoint.building.x.toFixed(6);
+                    if (yInput) yInput.value = buildingPoint.building.y.toFixed(6);
+                    if (zInput) zInput.value = buildingPoint.building.z.toFixed(6);
                 }
-            } else {
-                table.style.display = 'none';
+                
+                // Update map coordinates
+                if (mapPoint) {
+                    const eastingInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="easting"]`);
+                    const northingInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="northing"]`);
+                    const elevationInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="elevation"]`);
+                    const latlngCell = document.querySelectorAll('.latlng-display')[i];
+                    
+                    if (eastingInput) eastingInput.value = mapPoint.coordinates.easting.toFixed(6);
+                    if (northingInput) northingInput.value = mapPoint.coordinates.northing.toFixed(6);
+                    if (elevationInput) elevationInput.value = mapPoint.coordinates.elevation.toFixed(6);
+                    if (latlngCell) latlngCell.textContent = `${mapPoint.latlng.lat.toFixed(6)}°N, ${mapPoint.latlng.lng.toFixed(6)}°E`;
+                }
             }
         }
         
