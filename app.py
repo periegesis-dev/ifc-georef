@@ -36,7 +36,9 @@ CORS(app,
          'http://localhost:3001',
          'http://127.0.0.1:3001',
          'http://localhost:8080',
-         'http://127.0.0.1:8080'
+         'http://127.0.0.1:8080',
+         'https://dev.geodatahub.ch',
+         'https://www.geodatahub.ch'
      ],
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
      allow_headers=['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
@@ -52,7 +54,15 @@ API_BASE_URL = os.getenv('API_BASE_URL', 'http://localhost:8000')
 @app.after_request
 def after_request(response):
     origin = request.headers.get('Origin')
-    if origin in ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3001', 'http://127.0.0.1:3001']:
+    allowed_origins = [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:3001',
+        'http://127.0.0.1:3001',
+        'https://dev.geodatahub.ch',
+        'https://www.geodatahub.ch'
+    ]
+    if origin in allowed_origins:
         response.headers.add('Access-Control-Allow-Origin', origin)
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept,Origin')
         response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
