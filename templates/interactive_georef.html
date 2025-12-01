@@ -458,7 +458,6 @@
                 <div class="controls">
                     <button class="btn" id="load-model" onclick="loadBuildingModel()">Load Model</button>
                     <button class="btn btn-danger" onclick="clearBuildingPoints()" disabled id="clear-building">Clear Points</button>
-                    <button class="btn btn-success" onclick="nextStep()" disabled id="next-step">Next: Map View</button>
                 </div>
             </div>
             
@@ -502,7 +501,6 @@
                     </select>
                     <!-- <button class="btn" onclick="testTransformation()" style="background: #666;">Test Transform</button> -->
                     <button class="btn btn-danger" onclick="clearMapPoints()" disabled id="clear-map">Clear Map Points</button>
-                    <button class="btn btn-success" onclick="generateConfig()" disabled id="generate-config">Generate Configuration</button>
                 </div>
             </div>
         </div>
@@ -558,6 +556,12 @@
                     </tr>
                 </tbody>
             </table>
+            
+            <div style="text-align: center; margin: 20px 0;">
+                <button class="btn btn-success" onclick="generateConfig()" disabled id="generate-config-bottom" style="font-size: 16px; padding: 14px 32px;">
+                    Generate Configuration
+                </button>
+            </div>
             
             <div id="final-config" style="display: none;">
                 <h3>Configuration for Web Application:</h3>
@@ -837,8 +841,6 @@
         }
         
         function onMapClick(e) {
-            if (currentStep !== 2) return;
-            
             // Find next available slot or stop at 3
             const existingPointIndex = mapPoints.findIndex(p => !p || Object.keys(p.coordinates).length === 0);
             const nextIndex = existingPointIndex !== -1 ? existingPointIndex : mapPoints.length;
@@ -1185,8 +1187,6 @@
             const axis = input.dataset.axis;
             const value = parseFloat(input.value);
             
-            if (isNaN(value)) return;
-            
             // Initialize or update the building point
             if (!buildingPoints[pointIndex]) {
                 buildingPoints[pointIndex] = {
@@ -1195,7 +1195,10 @@
                 };
             }
             
-            buildingPoints[pointIndex].building[axis] = value;
+            // Always update the axis value (even if NaN, it will be 0 from initialization)
+            if (!isNaN(value)) {
+                buildingPoints[pointIndex].building[axis] = value;
+            }
             
             // Check if all three coordinates are filled for this point
             const xInput = document.querySelector(`.building-coord[data-point="${pointIndex}"][data-axis="x"]`);
@@ -1239,9 +1242,10 @@
                     marker.title = `P${pointIndex + 1}: (${x.toFixed(6)}, ${y.toFixed(6)}, ${z.toFixed(6)})`;
                     buildingDiv.appendChild(marker);
                 }
-                
-                updateUI();
             }
+            
+            // Update UI without reformatting the table
+            updateUIWithoutTableUpdate();
         }
         
         // Handle manual map coordinate entry from table
@@ -1250,8 +1254,6 @@
             const pointIndex = parseInt(input.dataset.point);
             const axis = input.dataset.axis;
             const value = parseFloat(input.value);
-            
-            if (isNaN(value)) return;
             
             // Initialize or update the map point
             if (!mapPoints[pointIndex]) {
@@ -1262,7 +1264,10 @@
                 };
             }
             
-            mapPoints[pointIndex].coordinates[axis] = value;
+            // Always update the axis value
+            if (!isNaN(value)) {
+                mapPoints[pointIndex].coordinates[axis] = value;
+            }
             
             // Check if easting and northing are filled for this point
             const eastingInput = document.querySelector(`.map-coord[data-point="${pointIndex}"][data-axis="easting"]`);
@@ -1289,6 +1294,7 @@
                         lat = coords[1];
                     } catch (error) {
                         console.error('Reverse transformation error:', error);
+                        updateUIWithoutTableUpdate();
                         return;
                     }
                 } else {
@@ -1324,9 +1330,9 @@
                 
                 // Pan map to show the marker
                 map.setView([lat, lng], map.getZoom());
-                
-                updateUI();
             }
+            
+            updateUIWithoutTableUpdate();
         }
         
         function nextStep() {
@@ -1404,14 +1410,63 @@
         }
         
         function updateUI() {
-            // Update button states - require exactly 3 points
-            document.getElementById('next-step').disabled = buildingPoints.length !== 3;
+            // Update button states
             document.getElementById('clear-map').disabled = mapPoints.length === 0;
-            document.getElementById('generate-config').disabled = 
-                buildingPoints.length !== mapPoints.length || buildingPoints.length !== 3;
             
-            // Update coordinates table
+            // Update coordinates table first
             updateCoordinatesTable();
+            
+            // Check if all 3 points are completely filled in the table
+            let allPointsFilled = true;
+            for (let i = 0; i < 3; i++) {
+                const xInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="x"]`);
+                const yInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="y"]`);
+                const zInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="z"]`);
+                const eastingInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="easting"]`);
+                const northingInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="northing"]`);
+                const elevationInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="elevation"]`);
+                
+                if (!xInput?.value || !yInput?.value || !zInput?.value || 
+                    !eastingInput?.value || !northingInput?.value || !elevationInput?.value) {
+                    allPointsFilled = false;
+                    break;
+                }
+            }
+            
+            // Enable generate config button only when all table fields are filled
+            const generateConfigBtn = document.getElementById('generate-config-bottom');
+            if (generateConfigBtn) {
+                generateConfigBtn.disabled = !allPointsFilled;
+            }
+        }
+        
+        // Update UI without reformatting table values (for manual input)
+        function updateUIWithoutTableUpdate() {
+            // Update button states
+            document.getElementById('clear-map').disabled = mapPoints.length === 0;
+            
+            // Check if all 3 points are completely filled in the table
+            let allPointsFilled = true;
+            for (let i = 0; i < 3; i++) {
+                const xInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="x"]`);
+                const yInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="y"]`);
+                const zInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="z"]`);
+                const eastingInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="easting"]`);
+                const northingInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="northing"]`);
+                const elevationInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="elevation"]`);
+                
+                if (!xInput?.value || !yInput?.value || !zInput?.value || 
+                    !eastingInput?.value || !northingInput?.value || !elevationInput?.value) {
+                    allPointsFilled = false;
+                    break;
+                }
+            }
+            
+            // Enable generate config button only when all table fields are filled
+            const generateConfigBtn = document.getElementById('generate-config-bottom');
+            if (generateConfigBtn) {
+                generateConfigBtn.disabled = !allPointsFilled;
+            }
         }
         
         function updateCoordinatesTable() {
