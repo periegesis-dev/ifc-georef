@@ -510,7 +510,17 @@
                 <thead>
                     <tr>
                         <th rowspan="2">Point</th>
-                        <th colspan="3">Building Coordinates (mm)</th>
+                        <th colspan="3">
+                            <div style="display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;">
+                                <span>Building Coordinates</span>
+                                <select id="building-unit" onchange="convertBuildingUnits()" style="font-size: 12px; padding: 2px;">
+                                    <option value="mm">mm</option>
+                                    <option value="m">meters</option>
+                                    <option value="in">inches</option>
+                                    <option value="ft">feet</option>
+                                </select>
+                            </div>
+                        </th>
                         <th colspan="3">Geographic Coordinates</th>
                         <th rowspan="2">Lat/Lon</th>
                     </tr>
@@ -601,6 +611,7 @@
             
             initializeMap();
             setupEventListeners();
+            initializeDefaultValues();
             
             const urlParams = new URLSearchParams(window.location.search);
             const filename = urlParams.get('filename');
@@ -624,6 +635,28 @@
                 const storedToken = sessionStorage.getItem('auth_token');
             }
         });
+        
+        function initializeDefaultValues() {
+            // Initialize building points array with default Z values
+            for (let i = 0; i < 3; i++) {
+                const zInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="z"]`);
+                const elevationInput = document.querySelector(`.map-coord[data-point="${i}"][data-axis="elevation"]`);
+                
+                if (zInput && zInput.value) {
+                    // Trigger the input handler to store the default Z value in mm
+                    const event = new Event('input');
+                    Object.defineProperty(event, 'target', { value: zInput });
+                    handleBuildingCoordInput(event);
+                }
+                
+                if (elevationInput && elevationInput.value) {
+                    // Trigger the input handler to store the default elevation value
+                    const event = new Event('input');
+                    Object.defineProperty(event, 'target', { value: elevationInput });
+                    handleMapCoordInput(event);
+                }
+            }
+        }
         
         function initializeMap() {
             map = L.map('map').setView([47.3769, 8.5417], 13);
@@ -1179,6 +1212,53 @@
             return R * c;
         }
         
+        // Unit conversion functions for building coordinates
+        function convertToMm(value, fromUnit) {
+            switch(fromUnit) {
+                case 'mm': return value;
+                case 'm': return value * 1000;
+                case 'in': return value * 25.4;
+                case 'ft': return value * 304.8;
+                default: return value;
+            }
+        }
+        
+        function convertFromMm(value, toUnit) {
+            switch(toUnit) {
+                case 'mm': return value;
+                case 'm': return value / 1000;
+                case 'in': return value / 25.4;
+                case 'ft': return value / 304.8;
+                default: return value;
+            }
+        }
+        
+        function convertBuildingUnits() {
+            const newUnit = document.getElementById('building-unit').value;
+            
+            // Convert all existing values to the new unit
+            for (let i = 0; i < 3; i++) {
+                const xInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="x"]`);
+                const yInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="y"]`);
+                const zInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="z"]`);
+                
+                if (xInput && xInput.value && buildingPoints[i]) {
+                    const xMm = buildingPoints[i].building.x; // Always stored in mm
+                    xInput.value = convertFromMm(xMm, newUnit).toFixed(6);
+                }
+                
+                if (yInput && yInput.value && buildingPoints[i]) {
+                    const yMm = buildingPoints[i].building.y;
+                    yInput.value = convertFromMm(yMm, newUnit).toFixed(6);
+                }
+                
+                if (zInput && zInput.value && buildingPoints[i]) {
+                    const zMm = buildingPoints[i].building.z;
+                    zInput.value = convertFromMm(zMm, newUnit).toFixed(6);
+                }
+            }
+        }
+        
         // Handle manual building coordinate entry from table
         function handleBuildingCoordInput(event) {
             const input = event.target;
@@ -1194,9 +1274,11 @@
                 };
             }
             
-            // Always update the axis value (even if NaN, it will be 0 from initialization)
+            // Convert input value to mm for internal storage
             if (!isNaN(value)) {
-                buildingPoints[pointIndex].building[axis] = value;
+                const currentUnit = document.getElementById('building-unit').value;
+                const valueInMm = convertToMm(value, currentUnit);
+                buildingPoints[pointIndex].building[axis] = valueInMm;
             }
             
             // Check if all three coordinates are filled for this point
@@ -1480,9 +1562,11 @@
                     const yInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="y"]`);
                     const zInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="z"]`);
                     
-                    if (xInput) xInput.value = buildingPoint.building.x.toFixed(6);
-                    if (yInput) yInput.value = buildingPoint.building.y.toFixed(6);
-                    if (zInput) zInput.value = buildingPoint.building.z.toFixed(6);
+                    const currentUnit = document.getElementById('building-unit').value;
+                    
+                    if (xInput) xInput.value = convertFromMm(buildingPoint.building.x, currentUnit).toFixed(6);
+                    if (yInput) yInput.value = convertFromMm(buildingPoint.building.y, currentUnit).toFixed(6);
+                    if (zInput) zInput.value = convertFromMm(buildingPoint.building.z, currentUnit).toFixed(6);
                 }
                 
                 // Update map coordinates
