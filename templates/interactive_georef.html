@@ -625,8 +625,6 @@
             // Check if proj4 is loaded
             if (typeof proj4 === 'undefined') {
                 console.error('Proj4js library failed to load!');
-            } else {
-                console.log('Proj4js library loaded successfully');
             }
             
             initializeMap();
@@ -824,8 +822,6 @@
                     
                     // Enable controls
                     document.getElementById('clear-building').disabled = false;
-                    
-                    console.log(`Loaded ${data.geometries.length} geometries`);
                 })
                 .catch(error => {
                     console.error('Error loading IFC geometry:', error);
@@ -874,19 +870,26 @@
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(width, height);
             renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
             viewer.appendChild(renderer.domElement);
             
-            // Add lights
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            // Add lights for better color visibility
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
             scene.add(ambientLight);
             
-            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
-            directionalLight1.position.set(1, 1, 1);
+            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.6);
+            directionalLight1.position.set(100, 100, 100);
+            directionalLight1.castShadow = true;
             scene.add(directionalLight1);
             
             const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
-            directionalLight2.position.set(-1, -1, -1);
+            directionalLight2.position.set(-100, 50, -100);
             scene.add(directionalLight2);
+            
+            const directionalLight3 = new THREE.DirectionalLight(0xffffff, 0.3);
+            directionalLight3.position.set(0, -100, 0);
+            scene.add(directionalLight3);
             
             // Add grid helper
             const gridHelper = new THREE.GridHelper(1000, 50, 0xcccccc, 0xeeeeee);
@@ -896,14 +899,9 @@
             const axesHelper = new THREE.AxesHelper(100);
             scene.add(axesHelper);
             
-            // Add controls
-            console.log('THREE object:', THREE);
-            console.log('THREE.OrbitControls:', THREE.OrbitControls);
-            
             try {
                 if (THREE.OrbitControls) {
                     controls = new THREE.OrbitControls(camera, renderer.domElement);
-                    console.log('Controls object created:', controls);
                     controls.enableDamping = true;
                     controls.dampingFactor = 0.05;
                     controls.enableRotate = true;
@@ -917,37 +915,12 @@
                         RIGHT: THREE.MOUSE.PAN
                     };
                     
-                    // Test if controls are responding
-                    controls.addEventListener('change', () => {
-                        console.log('OrbitControls change event fired');
-                    });
-                    
-                    controls.addEventListener('start', () => {
-                        console.log('OrbitControls start event');
-                    });
-                    
-                    controls.addEventListener('end', () => {
-                        console.log('OrbitControls end event');
-                    });
-                    
-                    console.log('OrbitControls initialized successfully');
-                    console.log('Controls enabled:', {
-                        rotate: controls.enableRotate,
-                        zoom: controls.enableZoom,
-                        pan: controls.enablePan,
-                        domElement: controls.domElement
-                    });
                 } else {
                     console.error('THREE.OrbitControls is undefined!');
                 }
             } catch (error) {
                 console.error('Error initializing OrbitControls:', error);
             }
-            
-            // Test canvas events
-            renderer.domElement.addEventListener('mousedown', (e) => {
-                console.log('Canvas mousedown:', e.button);
-            });
             
             // Use double-click for point selection so OrbitControls can work freely
             renderer.domElement.addEventListener('dblclick', onBuildingClick);
@@ -983,13 +956,11 @@
         function onBuildingClick(event) {
             // Check if 3D viewer is initialized
             if (!is3DViewerInitialized || ifcMeshes.length === 0) {
-                console.log('3D viewer not ready yet');
                 return;
             }
             
             // Check if raycaster is initialized
             if (!raycaster || !mouse) {
-                console.error('Raycaster not initialized');
                 return;
             }
             
@@ -1040,10 +1011,6 @@
                 
                 // Update UI
                 updateUI();
-                
-                console.log(`Point ${nextIndex + 1} selected (mm):`, point.building.x.toFixed(3), point.building.y.toFixed(3), point.building.z.toFixed(3));
-            } else {
-                console.log('No intersection found. Please click on the building model.');
             }
         }
         
@@ -1136,9 +1103,7 @@
                         const coords = proj4('EPSG:4326', 'EPSG:2056', [latlng.lng, latlng.lat]);
                         easting = coords[0];
                         northing = coords[1];
-                        console.log('EPSG:2056 transformation:', latlng.lat, latlng.lng, '->', easting, northing);
                     } catch (error) {
-                        console.error('Proj4 transformation error:', error);
                         alert('Error transforming coordinates: ' + error.message);
                         return;
                     }
@@ -1342,7 +1307,6 @@
                         const coords = proj4('EPSG:4326', 'EPSG:2056', [lng, lat]);
                         easting = coords[0];
                         northing = coords[1];
-                        console.log('Manual EPSG:2056 transformation:', lat, lng, '->', easting, northing);
                     } catch (error) {
                         console.error('Proj4 transformation error:', error);
                         alert('Error transforming coordinates: ' + error.message);
@@ -1956,10 +1920,6 @@
             if (typeof proj4 !== 'undefined') {
                 proj4.defs("EPSG:2056", "+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs");
                 const coords = proj4('EPSG:4326', 'EPSG:2056', [testLng, testLat]);
-                console.log('Test transformation for Zurich:');
-                console.log('Input: Lat=' + testLat + ', Lng=' + testLng);
-                console.log('Output: E=' + coords[0].toFixed(2) + ', N=' + coords[1].toFixed(2));
-                console.log('Expected approximately: E=2683000, N=1248000');
                 alert('Test transformation:\nInput: ' + testLat + '°N, ' + testLng + '°E\nOutput: E=' + coords[0].toFixed(2) + ', N=' + coords[1].toFixed(2) + '\n\nCheck console for details.');
             } else {
                 alert('Proj4js not loaded!');
