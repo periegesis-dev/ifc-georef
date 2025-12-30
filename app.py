@@ -1478,6 +1478,131 @@ def analyze_ifc_api(filename):
     except Exception as e:
         return {'error': str(e)}, 500
 
+@app.route('/api/ifc-geometry/<filename>')
+def get_ifc_geometry(filename):
+    """API endpoint to extract IFC geometry for Three.js visualization"""
+    try:
+        fn = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if not os.path.exists(fn):
+            return {'error': 'File not found'}, 404
+        
+        ifc_file = ifcopenshell.open(fn)
+        
+        # Settings for geometry processing
+        settings = ifcopenshell.geom.settings()
+        settings.set(settings.USE_WORLD_COORDS, True)
+        settings.set(settings.DISABLE_OPENING_SUBTRACTIONS, False)
+        
+        # Get all geometric products
+        products = ifc_file.by_type('IfcProduct')
+        
+        geometries = []
+        all_vertices = []
+        
+        for product in products:
+            # Skip IfcSpace and other non-visual elements
+            if product.is_a('IfcSpace') or product.is_a('IfcOpeningElement'):
+                continue
+                
+            if product.Representation:
+                try:
+                    shape = ifcopenshell.geom.create_shape(settings, product)
+                    verts = shape.geometry.verts
+                    faces = shape.geometry.faces
+                    materials = shape.geometry.materials
+                    material_ids = shape.geometry.material_ids
+                    
+                    # Convert to format suitable for Three.js
+                    vertices = []
+                    for i in range(0, len(verts), 3):
+                        vertices.extend([verts[i], verts[i+1], verts[i+2]])
+                        all_vertices.append([verts[i], verts[i+1], verts[i+2]])
+                    
+                    indices = list(faces)
+                    
+                    # Extract color from IFC styles and materials
+                    color = None
+                    
+                    # Try to get style color from the product
+                    try:
+                        styles = []
+                        if hasattr(product, 'Representation') and product.Representation:
+                            for representation in product.Representation.Representations:
+                                for item in representation.Items:
+                                    if hasattr(item, 'Styles') and item.Styles:
+                                        styles.extend(item.Styles)
+                                    if hasattr(item, 'StyledByItem') and item.StyledByItem:
+                                        for style_assignment in item.StyledByItem:
+                                            if hasattr(style_assignment, 'Styles'):
+                                                styles.extend(style_assignment.Styles)
+                        
+                        # Extract color from styles
+                        for style in styles:
+                            if style.is_a('IfcSurfaceStyle'):
+                                for surface_style in style.Styles:
+                                    if surface_style.is_a('IfcSurfaceStyleRendering'):
+                                        if hasattr(surface_style, 'SurfaceColour') and surface_style.SurfaceColour:
+                                            col = surface_style.SurfaceColour
+                                            r = int(col.Red * 255) if hasattr(col, 'Red') else 128
+                                            g = int(col.Green * 255) if hasattr(col, 'Green') else 128
+                                            b = int(col.Blue * 255) if hasattr(col, 'Blue') else 128
+                                            color = f'#{r:02x}{g:02x}{b:02x}'
+                                            break
+                            if color:
+                                break
+                    except:
+                        pass
+                    
+                    # Fallback to geometry materials
+                    if not color and materials and len(materials) > 0:
+                        mat = materials[0]
+                        if hasattr(mat, 'diffuse') and mat.diffuse:
+                            r = int(mat.diffuse[0] * 255)
+                            g = int(mat.diffuse[1] * 255)
+                            b = int(mat.diffuse[2] * 255)
+                            color = f'#{r:02x}{g:02x}{b:02x}'
+                    
+                    # Use white/light gray as default if no color found
+                    if not color:
+                        color = '#f5f5f5'
+                    
+                    geometries.append({
+                        'vertices': vertices,
+                        'indices': indices,
+                        'color': color,
+                        'type': product.is_a()
+                    })
+                    
+                except Exception as e:
+                    print(f"Error processing {product.is_a()}: {e}")
+                    continue
+        
+        # Calculate bounds from all vertices
+        if all_vertices:
+            import numpy as np
+            coords_array = np.array(all_vertices)
+            min_coords = np.min(coords_array, axis=0).tolist()
+            max_coords = np.max(coords_array, axis=0).tolist()
+            center_coords = np.mean(coords_array, axis=0).tolist()
+            dimensions = (coords_array.max(axis=0) - coords_array.min(axis=0)).tolist()
+        else:
+            min_coords = max_coords = center_coords = dimensions = [0, 0, 0]
+        
+        return jsonify({
+            'geometries': geometries,
+            'bounds': {
+                'min': min_coords,
+                'max': max_coords,
+                'center': center_coords,
+                'dimensions': dimensions
+            }
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {'error': str(e)}, 500
+
 @app.route('/api/upload-to-project/<project_id>', methods=['POST'])
 def upload_to_project(project_id):
     """Proxy endpoint to upload files to external API to avoid CORS issues"""
