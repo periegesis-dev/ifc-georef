@@ -156,16 +156,28 @@
         
         .viewer-container {
             width: 100%;
-            min-height: 400px;
+            min-height: 500px;
+            height: 500px;
             border: 2px solid #F3F3F3;
             border-radius: 12px;
             background: linear-gradient(135deg, #FCFFE7 0%, #f8fce0 100%);
             display: flex;
             align-items: center;
             justify-content: center;
-            cursor: crosshair;
             position: relative;
             transition: all 0.3s ease;
+            overflow: hidden;
+        }
+        
+        .viewer-container canvas {
+            width: 100% !important;
+            height: 100% !important;
+            display: block;
+            cursor: grab;
+        }
+        
+        .viewer-container canvas:active {
+            cursor: grabbing;
         }
         
         .viewer-container:hover {
@@ -438,8 +450,14 @@
                 <div class="panel-content">
                     <div class="instruction" id="instruction">
                         First, upload your IFC file, then select exactly 3 control points. You can either:
-                        <br>• <strong>Click</strong> on the building to add points (coordinates will populate in the table below), OR
-                        <br>• <strong>Enter X, Y, Z values</strong> manually in the table (red markers will appear automatically)
+                        <br>• <strong>Double-click</strong> on the 3D building model to add points (coordinates will populate in the table below), OR
+                        <br>• <strong>Enter X, Y, Z values</strong> manually in the table
+                        <br><br>
+                        <strong>3D Viewer Controls:</strong>
+                        <br>• <strong>Left mouse drag:</strong> Rotate view
+                        <br>• <strong>Right mouse drag:</strong> Pan view
+                        <br>• <strong>Mouse wheel:</strong> Zoom in/out
+                        <br>• <strong>Double-click on building:</strong> Select control point
                     </div>
                     
                     <div style="margin-bottom: 15px;">
@@ -448,10 +466,9 @@
                     </div>
                     
                     <div class="viewer-container" id="building-viewer">
-                        <div style="text-align: center; color: #6c757d;">
+                        <div id="viewer-placeholder" style="text-align: center; color: #6c757d;">
                             <p style="font-weight: 600; margin-bottom: 8px;">IFC Model Viewer</p>
-                            <p>Please upload an IFC file first</p>
-                            <canvas id="building-canvas" style="display: none;"></canvas>
+                            <p>Please upload an IFC file and click Load Model</p>
                         </div>
                     </div>
                 </div>
@@ -588,8 +605,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
     
     <!-- Include Three.js for 3D model viewing -->
-    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
-    <script src="https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     
     <script>
         // Global variables
@@ -600,6 +617,9 @@
         let scene, camera, renderer, controls;
         let buildingModel = null;
         let ifcBounds = null;
+        let ifcMeshes = [];  // Store all IFC meshes for raycasting
+        let raycaster, mouse;  // Initialize later when THREE is loaded
+        let is3DViewerInitialized = false;
         
         document.addEventListener('DOMContentLoaded', function() {
             // Check if proj4 is loaded
@@ -669,7 +689,7 @@
         }
         
         function setupEventListeners() {
-            document.getElementById('building-viewer').addEventListener('click', onBuildingClick);
+            // Don't add click listener here - we'll add it to the canvas after 3D viewer is initialized
             document.getElementById('file-upload').addEventListener('change', handleFileUpload);
             
             // Add event listeners for table inputs
@@ -724,91 +744,254 @@
         function loadBuildingModel() {
             const filename = getSelectedFilename();
             
-            if (filename) {
-                fetch(`/api/ifc-analysis/${filename}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.bounds && data.coordinates_count > 0) {
-                            ifcBounds = data.bounds;
-                            
-                            const viewer = document.getElementById('building-viewer');
-                            
-                            const maxWidth = 400;
-                            const maxHeight = 300;
-                            
-                            const buildingWidth = ifcBounds.dimensions[0] / 1000;
-                            const buildingHeight = ifcBounds.dimensions[1] / 1000;
-                            
-                            const aspectRatio = buildingWidth / buildingHeight;
-                            
-                            let displayWidth, displayHeight;
-                            if (aspectRatio > maxWidth / maxHeight) {
-                                displayWidth = maxWidth;
-                                displayHeight = maxWidth / aspectRatio;
-                            } else {
-                                displayHeight = maxHeight;
-                                displayWidth = maxHeight * aspectRatio;
-                            }
-                            
-                            viewer.innerHTML = `
-                                <div style="text-align: center; color: #333;">
-                                    <p style="font-weight: 600; margin-bottom: 8px;"><strong>IFC Model: ${filename}</strong></p>
-                                    <p style="font-size: 14px; margin: 12px 0;">Click anywhere to select control points</p>
-                                    <div id="building"style="width: ${displayWidth}px; height: ${displayHeight}px; border: 2px dashed #B0C70D; margin: 20px auto; position: relative; background: linear-gradient(45deg, #FCFFE7 25%, transparent 25%), linear-gradient(-45deg, #FCFFE7 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #FCFFE7 75%), linear-gradient(-45deg, transparent 75%, #FCFFE7 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0px;">
-                                        <div style="position: absolute; top: 10px; left: 10px; background: rgba(176, 199, 13, 0.9); color: white; padding: 4px 10px; font-size: 12px; border-radius: 6px; font-weight: 600;">
-                                            Real IFC Building (${ifcBounds.coordinates_count} elements)
-                                        </div>
-                                    </div>
-                                    <p style="font-size: 12px; color: #6B7280;">Click on the floor plan to select control points. Coordinates will be mapped to real IFC values.</p>
-                                </div>
-                            `;
-                        } else {
-                            loadSimulatedModel();
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Error loading IFC bounds:', error);
-                        loadSimulatedModel();
-                    });
-            } else {
-                loadSimulatedModel();
+            if (!filename) {
+                alert('Please upload an IFC file first');
+                return;
             }
             
-            document.getElementById('clear-building').disabled = false;
+            // Show loading message
+            const viewer = document.getElementById('building-viewer');
+            const placeholder = document.getElementById('viewer-placeholder');
+            if (placeholder) {
+                placeholder.innerHTML = '<p style="font-weight: 600;">Loading 3D Model...</p><p>Please wait...</p>';
+            }
+            
+            // Load geometry from API
+            fetch(`/api/ifc-geometry/${filename}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    ifcBounds = data.bounds;
+                    
+                    // Initialize 3D viewer
+                    init3DViewer();
+                    
+                    // Load geometries into Three.js scene
+                    data.geometries.forEach((geom, index) => {
+                        const geometry = new THREE.BufferGeometry();
+                        
+                        const vertices = new Float32Array(geom.vertices);
+                        const indices = new Uint32Array(geom.indices);
+                        
+                        geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+                        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+                        geometry.computeVertexNormals();
+                        
+                        // Create material with color
+                        const color = new THREE.Color(geom.color);
+                        const material = new THREE.MeshPhongMaterial({
+                            color: color,
+                            side: THREE.DoubleSide,
+                            flatShading: false
+                        });
+                        
+                        const mesh = new THREE.Mesh(geometry, material);
+                        mesh.userData.ifcType = geom.type;
+                        scene.add(mesh);
+                        ifcMeshes.push(mesh);
+                    });
+                    
+                    // Position camera to view the entire model
+                    const center = new THREE.Vector3(
+                        data.bounds.center[0],
+                        data.bounds.center[1],
+                        data.bounds.center[2]
+                    );
+                    
+                    const size = Math.max(...data.bounds.dimensions);
+                    const distance = size * 2;
+                    
+                    camera.position.set(
+                        center.x + distance,
+                        center.y + distance,
+                        center.z + distance
+                    );
+                    camera.lookAt(center);
+                    
+                    // Update controls target if available
+                    if (controls && controls.target) {
+                        controls.target.copy(center);
+                        controls.update();
+                    }
+                    
+                    // Remove placeholder
+                    if (placeholder) {
+                        placeholder.remove();
+                    }
+                    
+                    // Enable controls
+                    document.getElementById('clear-building').disabled = false;
+                    
+                    console.log(`Loaded ${data.geometries.length} geometries`);
+                })
+                .catch(error => {
+                    console.error('Error loading IFC geometry:', error);
+                    if (placeholder) {
+                        placeholder.innerHTML = `<p style="color: #ee5253;">Error loading model: ${error.message}</p><p>Please try a different file</p>`;
+                    }
+                });
         }
         
-        function loadSimulatedModel() {
-            const viewer = document.getElementById('building-viewer');
-            
-            const maxWidth = 400;
-            const maxHeight = 300;
-            const defaultAspectRatio = 1.5;
-            
-            let displayWidth, displayHeight;
-            if (defaultAspectRatio > maxWidth / maxHeight) {
-                displayWidth = maxWidth;
-                displayHeight = maxWidth / defaultAspectRatio;
-            } else {
-                displayHeight = maxHeight;
-                displayWidth = maxHeight * defaultAspectRatio;
+        function init3DViewer() {
+            // Check if THREE.js is loaded
+            if (typeof THREE === 'undefined') {
+                console.error('Three.js library not loaded!');
+                alert('Error: 3D library not loaded. Please refresh the page.');
+                return;
             }
             
-            viewer.innerHTML = `
-                <div style="text-align: center; color: #333;">
-                    <p style="font-weight: 600; margin-bottom: 8px;"><strong>Simulated Building Model</strong></p>
-                    <p style="font-size: 14px; margin: 12px 0;">Click anywhere to select control points</p>
-                    <div id="building-floor-plan" style="width: ${displayWidth}px; height: ${displayHeight}px; border: 2px dashed #B0C70D; margin: 20px auto; position: relative; background: linear-gradient(45deg, #FCFFE7 25%, transparent 25%), linear-gradient(-45deg, #FCFFE7 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #FCFFE7 75%), linear-gradient(-45deg, transparent 75%, #FCFFE7 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0px; border-radius: 8px;">
-                        <div style="position: absolute; top: 10px; left: 10px; background: rgba(176, 199, 13, 0.9); color: white; padding: 4px 10px; font-size: 12px; border-radius: 6px; font-weight: 600;">Building Floor Plan</div>
-                    </div>
-                    <p style="font-size: 12px; color: #6B7280;">Upload an IFC file first for accurate coordinates.</p>
-                </div>
-            `;
+            // Initialize raycaster and mouse vector
+            if (!raycaster) {
+                raycaster = new THREE.Raycaster();
+                mouse = new THREE.Vector2();
+            }
+            
+            if (is3DViewerInitialized) {
+                // Clear existing scene
+                while(scene.children.length > 0) { 
+                    scene.remove(scene.children[0]); 
+                }
+                ifcMeshes = [];
+                return;
+            }
+            
+            const viewer = document.getElementById('building-viewer');
+            
+            // Create scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            
+            // Create camera
+            const width = viewer.clientWidth;
+            const height = viewer.clientHeight;
+            camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 100000);
+            camera.position.set(50, 50, 50);
+            
+            // Create renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(width, height);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            viewer.appendChild(renderer.domElement);
+            
+            // Add lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight1.position.set(1, 1, 1);
+            scene.add(directionalLight1);
+            
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
+            directionalLight2.position.set(-1, -1, -1);
+            scene.add(directionalLight2);
+            
+            // Add grid helper
+            const gridHelper = new THREE.GridHelper(1000, 50, 0xcccccc, 0xeeeeee);
+            scene.add(gridHelper);
+            
+            // Add axes helper
+            const axesHelper = new THREE.AxesHelper(100);
+            scene.add(axesHelper);
+            
+            // Add controls
+            console.log('THREE object:', THREE);
+            console.log('THREE.OrbitControls:', THREE.OrbitControls);
+            
+            try {
+                if (THREE.OrbitControls) {
+                    controls = new THREE.OrbitControls(camera, renderer.domElement);
+                    console.log('Controls object created:', controls);
+                    controls.enableDamping = true;
+                    controls.dampingFactor = 0.05;
+                    controls.enableRotate = true;
+                    controls.enableZoom = true;
+                    controls.enablePan = true;
+                    controls.minDistance = 10;
+                    controls.maxDistance = 50000;
+                    controls.mouseButtons = {
+                        LEFT: THREE.MOUSE.ROTATE,
+                        MIDDLE: THREE.MOUSE.DOLLY,
+                        RIGHT: THREE.MOUSE.PAN
+                    };
+                    
+                    // Test if controls are responding
+                    controls.addEventListener('change', () => {
+                        console.log('OrbitControls change event fired');
+                    });
+                    
+                    controls.addEventListener('start', () => {
+                        console.log('OrbitControls start event');
+                    });
+                    
+                    controls.addEventListener('end', () => {
+                        console.log('OrbitControls end event');
+                    });
+                    
+                    console.log('OrbitControls initialized successfully');
+                    console.log('Controls enabled:', {
+                        rotate: controls.enableRotate,
+                        zoom: controls.enableZoom,
+                        pan: controls.enablePan,
+                        domElement: controls.domElement
+                    });
+                } else {
+                    console.error('THREE.OrbitControls is undefined!');
+                }
+            } catch (error) {
+                console.error('Error initializing OrbitControls:', error);
+            }
+            
+            // Test canvas events
+            renderer.domElement.addEventListener('mousedown', (e) => {
+                console.log('Canvas mousedown:', e.button);
+            });
+            
+            // Use double-click for point selection so OrbitControls can work freely
+            renderer.domElement.addEventListener('dblclick', onBuildingClick);
+            
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize, false);
+            
+            // Animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+                if (controls && controls.update) {
+                    controls.update();
+                }
+                renderer.render(scene, camera);
+            }
+            animate();
+            
+            is3DViewerInitialized = true;
+        }
+        
+        function onWindowResize() {
+            if (!is3DViewerInitialized) return;
+            
+            const viewer = document.getElementById('building-viewer');
+            const width = viewer.clientWidth;
+            const height = viewer.clientHeight;
+            
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+            renderer.setSize(width, height);
         }
         
         function onBuildingClick(event) {
-            // Find the building floor plan div (the actual clickable area)
-            const buildingDiv = event.target.closest('.viewer-container').querySelector('div[style*="border: 2px dashed"]');
-            if (!buildingDiv) return;
+            // Check if 3D viewer is initialized
+            if (!is3DViewerInitialized || ifcMeshes.length === 0) {
+                console.log('3D viewer not ready yet');
+                return;
+            }
+            
+            // Check if raycaster is initialized
+            if (!raycaster || !mouse) {
+                console.error('Raycaster not initialized');
+                return;
+            }
             
             // Don't add points if we already have 3
             const existingPointIndex = buildingPoints.findIndex(p => !p || Object.keys(p.building).length === 0);
@@ -819,57 +1002,101 @@
                 return;
             }
             
-            const rect = buildingDiv.getBoundingClientRect();
-            const x = event.clientX - rect.left;
-            const y = event.clientY - rect.top;
+            // Get canvas rect for proper coordinate calculation
+            const rect = renderer.domElement.getBoundingClientRect();
             
-            // Only process clicks within the building div bounds
-            if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+            // Calculate mouse position in normalized device coordinates (-1 to +1)
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
             
-            // Convert screen coordinates to building coordinates
-            let buildingX, buildingY, buildingZ = 0;
+            // Update the raycaster
+            raycaster.setFromCamera(mouse, camera);
             
-            if (ifcBounds && ifcBounds.dimensions) {
-                // Use actual IFC model bounds for realistic coordinates
-                const relX = x / rect.width;  // 0 to 1
-                const relY = 1 - (y / rect.height); // 0 to 1 (flip Y axis)
+            // Calculate intersections
+            const intersects = raycaster.intersectObjects(ifcMeshes, false);
+            
+            if (intersects.length > 0) {
+                const intersection = intersects[0];
+                const point3D = intersection.point;
                 
-                buildingX = ifcBounds.min[0] + relX * ifcBounds.dimensions[0];
-                buildingY = ifcBounds.min[1] + relY * ifcBounds.dimensions[1];
-                buildingZ = ifcBounds.min[2]; // Use ground level from IFC
+                // Convert from meters to millimeters (ifcopenshell.geom returns meters, but IFC uses mm)
+                // This matches the behavior of the old 2D view
+                const point = {
+                    screen: {
+                        x: event.clientX - rect.left,
+                        y: event.clientY - rect.top
+                    },
+                    building: {
+                        x: point3D.x * 1000,  // Convert meters to millimeters
+                        y: point3D.y * 1000,  // Convert meters to millimeters
+                        z: point3D.z * 1000   // Convert meters to millimeters
+                    }
+                };
+                
+                buildingPoints[nextIndex] = point;
+                
+                // Add a visual marker in 3D space (use original meter coordinates for 3D scene)
+                addPointMarker(point3D, nextIndex);
+                
+                // Update UI
+                updateUI();
+                
+                console.log(`Point ${nextIndex + 1} selected (mm):`, point.building.x.toFixed(3), point.building.y.toFixed(3), point.building.z.toFixed(3));
             } else {
-                // Fallback to simulated coordinates (100m x 100m building)
-                const buildingWidth = 100; // meters
-                const buildingHeight = 100; // meters
-                
-                buildingX = (x / rect.width) * buildingWidth - (buildingWidth / 2); // -50 to +50
-                buildingY = (1 - y / rect.height) * buildingHeight - (buildingHeight / 2); // -50 to +50 (flip Y)
-                buildingZ = 0; // Ground level
+                console.log('No intersection found. Please click on the building model.');
             }
-            
-            const point = {
-                screen: {x: x, y: y},
-                building: {x: buildingX, y: buildingY, z: buildingZ}
-            };
-            
-            buildingPoints[nextIndex] = point;
-            
+        }
+        
+        function addPointMarker(position, index) {
             // Remove existing marker for this point if it exists
-            const existingMarker = buildingDiv.querySelector(`.building-point[data-point="${nextIndex}"]`);
+            const existingMarker = scene.children.find(child => 
+                child.userData && child.userData.pointIndex === index
+            );
             if (existingMarker) {
-                existingMarker.remove();
+                scene.remove(existingMarker);
             }
             
-            // Add visual marker positioned relative to the building div
-            const marker = document.createElement('div');
-            marker.className = 'point-marker building-point';
-            marker.setAttribute('data-point', nextIndex);
-            marker.style.left = x + 'px';
-            marker.style.top = y + 'px';
-            marker.title = `P${nextIndex + 1}: (${buildingX.toFixed(6)}, ${buildingY.toFixed(6)}, ${buildingZ.toFixed(6)})`;
-            buildingDiv.appendChild(marker);
+            // Calculate marker size based on model bounds (0.5% of largest dimension)
+            const modelSize = ifcBounds ? Math.max(...ifcBounds.dimensions) : 1000;
+            const markerSize = modelSize * 0.005;
             
-            updateUI();
+            // Create a sphere marker
+            const geometry = new THREE.SphereGeometry(markerSize, 16, 16);
+            const material = new THREE.MeshBasicMaterial({
+                color: 0xff0000,
+                transparent: true,
+                opacity: 0.8
+            });
+            const marker = new THREE.Mesh(geometry, material);
+            marker.position.copy(position);
+            marker.userData.pointIndex = index;
+            marker.userData.isMarker = true;
+            
+            // Add label
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 128;
+            canvas.height = 64;
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.fillStyle = '#000000';
+            context.font = 'Bold 32px Arial';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(`P${index + 1}`, canvas.width / 2, canvas.height / 2);
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
+            const sprite = new THREE.Sprite(spriteMaterial);
+            const labelSize = modelSize * 0.02;
+            sprite.scale.set(labelSize, labelSize * 0.5, 1);
+            sprite.position.copy(position);
+            sprite.position.z += markerSize * 3;  // Offset above the marker
+            sprite.userData.pointIndex = index;
+            sprite.userData.isMarker = true;
+            
+            scene.add(marker);
+            scene.add(sprite);
         }
         
         function onMapClick(e) {
@@ -1452,8 +1679,14 @@
         
         function clearBuildingPoints() {
             buildingPoints = [];
-            const markers = document.querySelectorAll('.building-point');
-            markers.forEach(marker => marker.remove());
+            
+            // Remove 3D markers from scene
+            if (scene) {
+                const markersToRemove = scene.children.filter(child => 
+                    child.userData && child.userData.isMarker
+                );
+                markersToRemove.forEach(marker => scene.remove(marker));
+            }
             
             // Clear building coordinate inputs in table
             document.querySelectorAll('.building-coord').forEach(input => {
