@@ -550,7 +550,7 @@
                         <td>P1</td>
                         <td><input type="number" step="any" class="coord-input building-coord" data-point="0" data-axis="x" placeholder="X"></td>
                         <td><input type="number" step="any" class="coord-input building-coord" data-point="0" data-axis="y" placeholder="Y"></td>
-                        <td><input type="number" step="any" class="coord-input building-coord" data-point="0" data-axis="z" placeholder="Z"></td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="0" data-axis="z" placeholder="Z" value="0"></td>
                         <td><input type="number" step="any" class="coord-input map-coord" data-point="0" data-axis="easting" placeholder="Easting"></td>
                         <td><input type="number" step="any" class="coord-input map-coord" data-point="0" data-axis="northing" placeholder="Northing"></td>
                         <td><input type="number" step="any" class="coord-input map-coord" data-point="0" data-axis="elevation" placeholder="Elevation"></td>
@@ -560,7 +560,7 @@
                         <td>P2</td>
                         <td><input type="number" step="any" class="coord-input building-coord" data-point="1" data-axis="x" placeholder="X"></td>
                         <td><input type="number" step="any" class="coord-input building-coord" data-point="1" data-axis="y" placeholder="Y"></td>
-                        <td><input type="number" step="any" class="coord-input building-coord" data-point="1" data-axis="z" placeholder="Z"></td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="1" data-axis="z" placeholder="Z" value="0"></td>
                         <td><input type="number" step="any" class="coord-input map-coord" data-point="1" data-axis="easting" placeholder="Easting"></td>
                         <td><input type="number" step="any" class="coord-input map-coord" data-point="1" data-axis="northing" placeholder="Northing"></td>
                         <td><input type="number" step="any" class="coord-input map-coord" data-point="1" data-axis="elevation" placeholder="Elevation"></td>
@@ -570,7 +570,7 @@
                         <td>P3</td>
                         <td><input type="number" step="any" class="coord-input building-coord" data-point="2" data-axis="x" placeholder="X"></td>
                         <td><input type="number" step="any" class="coord-input building-coord" data-point="2" data-axis="y" placeholder="Y"></td>
-                        <td><input type="number" step="any" class="coord-input building-coord" data-point="2" data-axis="z" placeholder="Z"></td>
+                        <td><input type="number" step="any" class="coord-input building-coord" data-point="2" data-axis="z" placeholder="Z" value="0"></td>
                         <td><input type="number" step="any" class="coord-input map-coord" data-point="2" data-axis="easting" placeholder="Easting"></td>
                         <td><input type="number" step="any" class="coord-input map-coord" data-point="2" data-axis="northing" placeholder="Northing"></td>
                         <td><input type="number" step="any" class="coord-input map-coord" data-point="2" data-axis="elevation" placeholder="Elevation"></td>
@@ -1072,12 +1072,12 @@
             
             // calculate marker size based on model bounds
             const modelSize = ifcBounds ? Math.max(...ifcBounds.dimensions) : 1000;
-            const markerSize = modelSize * 0.015;  // 1.5% of largest dimension
+            const markerSize = modelSize * 0.015;
             
-            // create small red cube
+            // create small orange cube
             const geometry = new THREE.BoxGeometry(markerSize, markerSize, markerSize);
             const material = new THREE.MeshBasicMaterial({
-                color: 0xff0000,
+                color: 0xff8800,
                 depthTest: false,
                 transparent: true,
                 opacity: 0.95
@@ -1183,8 +1183,11 @@
                 return;
             }
             
-            // Don't add points if we already have 3
-            const existingPointIndex = buildingPoints.findIndex(p => !p || Object.keys(p.building).length === 0);
+            // Don't add points if we already have 3 complete points
+            // A complete point must have all three coordinates (x, y, z) with non-zero values for x and y
+            const existingPointIndex = buildingPoints.findIndex(p => 
+                !p || !p.building || p.building.x === 0 || p.building.y === 0
+            );
             const nextIndex = existingPointIndex !== -1 ? existingPointIndex : buildingPoints.length;
             
             if (nextIndex >= 3) {
@@ -1234,7 +1237,11 @@
             const existingMarkers = scene.children.filter(child => 
                 child.userData && child.userData.pointIndex === index && child.userData.isMarker
             );
-            existingMarkers.forEach(marker => scene.remove(marker));
+            existingMarkers.forEach(marker => {
+                scene.remove(marker);
+                if (marker.geometry) marker.geometry.dispose();
+                if (marker.material) marker.material.dispose();
+            });
             
             // marker size on double click
             const modelSize = ifcBounds ? Math.max(...ifcBounds.dimensions) : 1000;
@@ -1245,12 +1252,14 @@
             const material = new THREE.MeshBasicMaterial({
                 color: 0xff0000,
                 transparent: true,
-                opacity: 0.8
+                opacity: 0.8,
+                depthTest: false
             });
             const marker = new THREE.Mesh(geometry, material);
             marker.position.copy(position);
             marker.userData.pointIndex = index;
             marker.userData.isMarker = true;
+            marker.renderOrder = 1000;
             
             scene.add(marker);
         }
@@ -1651,37 +1660,22 @@
             const z = parseFloat(zInput.value);
             
             if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
-                // Update the building point with all coordinates
-                buildingPoints[pointIndex].building = {x: x, y: y, z: z};
+                // Convert to mm and update the building point
+                const currentUnit = document.getElementById('building-unit').value;
+                const xMm = convertToMm(x, currentUnit);
+                const yMm = convertToMm(y, currentUnit);
+                const zMm = convertToMm(z, currentUnit);
                 
-                // Calculate screen position for visual marker
-                const buildingDiv = document.querySelector('.viewer-container div[style*="border: 2px dashed"]');
-                if (buildingDiv && ifcBounds) {
-                    const rect = buildingDiv.getBoundingClientRect();
-                    
-                    // Convert building coordinates back to screen coordinates
-                    const relX = (x - ifcBounds.min[0]) / ifcBounds.dimensions[0];
-                    const relY = (y - ifcBounds.min[1]) / ifcBounds.dimensions[1];
-                    
-                    const screenX = relX * rect.width;
-                    const screenY = (1 - relY) * rect.height; // Flip Y axis
-                    
-                    buildingPoints[pointIndex].screen = {x: screenX, y: screenY};
-                    
-                    // Remove existing marker for this point
-                    const existingMarker = buildingDiv.querySelector(`.building-point[data-point="${pointIndex}"]`);
-                    if (existingMarker) {
-                        existingMarker.remove();
-                    }
-                    
-                    // Add visual marker
-                    const marker = document.createElement('div');
-                    marker.className = 'point-marker building-point';
-                    marker.setAttribute('data-point', pointIndex);
-                    marker.style.left = screenX + 'px';
-                    marker.style.top = screenY + 'px';
-                    marker.title = `P${pointIndex + 1}: (${x.toFixed(6)}, ${y.toFixed(6)}, ${z.toFixed(6)})`;
-                    buildingDiv.appendChild(marker);
+                buildingPoints[pointIndex].building = {x: xMm, y: yMm, z: zMm};
+                
+                // Add 3D marker to the scene (convert from mm to meters for Three.js)
+                if (is3DViewerInitialized && scene) {
+                    const position3D = new THREE.Vector3(
+                        xMm / 1000,  // Convert mm to meters
+                        yMm / 1000,
+                        zMm / 1000
+                    );
+                    addPointMarker(position3D, pointIndex);
                 }
             }
             
