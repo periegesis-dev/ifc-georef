@@ -173,11 +173,11 @@
             width: 100% !important;
             height: 100% !important;
             display: block;
-            cursor: grab;
+            cursor: crosshair;
         }
         
         .viewer-container canvas:active {
-            cursor: grabbing;
+            cursor: crosshair;
         }
         
         .viewer-container:hover {
@@ -612,9 +612,17 @@
         let scene, camera, renderer, controls;
         let buildingModel = null;
         let ifcBounds = null;
-        let ifcMeshes = [];  // Store all IFC meshes for raycasting
-        let raycaster, mouse;  // Initialize later when THREE is loaded
+        let ifcMeshes = [];
+        let raycaster, mouse;
         let is3DViewerInitialized = false;
+        
+        // edge and corner snapping variables
+        let edgeHighlightLine = null;
+        let cornerMarker = null;
+        let currentSnapPoint = null;
+        let snapMode = null;
+        const CORNER_SNAP_THRESHOLD = 1;
+        const EDGE_SNAP_THRESHOLD = 6;
         
         document.addEventListener('DOMContentLoaded', function() {
             // Check if proj4 is loaded
@@ -827,25 +835,24 @@
         }
         
         function init3DViewer() {
-            // Check if THREE.js is loaded
             if (typeof THREE === 'undefined') {
                 console.error('Three.js library not loaded!');
                 alert('Error: 3D library not loaded. Please refresh the page.');
                 return;
             }
             
-            // Initialize raycaster and mouse vector
+            // initialize raycaster and mouse vector
             if (!raycaster) {
                 raycaster = new THREE.Raycaster();
                 mouse = new THREE.Vector2();
             }
             
             if (is3DViewerInitialized) {
-                // Clear existing scene
                 while(scene.children.length > 0) { 
                     scene.remove(scene.children[0]); 
                 }
                 ifcMeshes = [];
+                clearSnapVisuals();
                 return;
             }
             
@@ -904,6 +911,8 @@
                     controls.enablePan = true;
                     controls.minDistance = 10;
                     controls.maxDistance = 50000;
+                    controls.zoomToCursor = true;
+                    controls.screenSpacePanning = true;
                     controls.mouseButtons = {
                         LEFT: THREE.MOUSE.ROTATE,
                         MIDDLE: THREE.MOUSE.DOLLY,
@@ -917,8 +926,8 @@
                 console.error('Error initializing OrbitControls:', error);
             }
             
-            // Use double-click for point selection so OrbitControls can work freely
             renderer.domElement.addEventListener('dblclick', onBuildingClick);
+            renderer.domElement.addEventListener('mousemove', onBuildingMouseMove);
             
             // Handle window resize
             window.addEventListener('resize', onWindowResize, false);
@@ -934,6 +943,221 @@
             animate();
             
             is3DViewerInitialized = true;
+        }
+        
+        function findNearestEdgeOrCorner(intersectionPoint, intersectedMesh) {
+            if (!intersectionPoint || !intersectedMesh) return null;
+            
+            const geometry = intersectedMesh.geometry;
+            if (!geometry || !geometry.attributes.position) return null;
+            
+            const positions = geometry.attributes.position.array;
+            const indices = geometry.index ? geometry.index.array : null;
+            
+            if (!indices) return null;
+            
+            const worldMatrix = intersectedMesh.matrixWorld;
+            
+            let nearestCorner = null;
+            let nearestCornerDistance = Infinity;
+            let nearestEdge = null;
+            let nearestEdgeDistance = Infinity;
+            let nearestEdgeCorner = null;
+            
+            for (let i = 0; i < indices.length; i += 3) {
+                // get triangle vertices
+                const vertices = [];
+                for (let j = 0; j < 3; j++) {
+                    const idx = indices[i + j] * 3;
+                    const vertex = new THREE.Vector3(
+                        positions[idx],
+                        positions[idx + 1],
+                        positions[idx + 2]
+                    );
+                    vertex.applyMatrix4(worldMatrix);
+                    vertices.push(vertex);
+                }
+                
+                // check corner distances
+                vertices.forEach((vertex, vertexIndex) => {
+                    const distance = intersectionPoint.distanceTo(vertex);
+                    if (distance < nearestCornerDistance) {
+                        nearestCornerDistance = distance;
+                        nearestCorner = vertex.clone();
+                    }
+                });
+                
+                // check edge distances
+                const edges = [
+                    [vertices[0], vertices[1]],
+                    [vertices[1], vertices[2]],
+                    [vertices[2], vertices[0]]
+                ];
+                
+                edges.forEach(([v1, v2]) => {
+                    const line = new THREE.Line3(v1, v2);
+                    const closestPoint = new THREE.Vector3();
+                    line.closestPointToPoint(intersectionPoint, true, closestPoint);
+                    const distance = intersectionPoint.distanceTo(closestPoint);
+                    
+                    if (distance < nearestEdgeDistance) {
+                        nearestEdgeDistance = distance;
+                        nearestEdge = {
+                            start: v1.clone(),
+                            end: v2.clone(),
+                            closestPoint: closestPoint.clone()
+                        };
+                        
+                        // determine which corner is nearest to the cursor on this edge
+                        const distToStart = intersectionPoint.distanceTo(v1);
+                        const distToEnd = intersectionPoint.distanceTo(v2);
+                        nearestEdgeCorner = distToStart < distToEnd ? v1.clone() : v2.clone();
+                    }
+                });
+            }
+            
+            // determine what to snap to based on priority: corner > edge
+            if (nearestCornerDistance < CORNER_SNAP_THRESHOLD) {
+                return {
+                    mode: 'corner',
+                    point: nearestCorner,
+                    distance: nearestCornerDistance
+                };
+            } else if (nearestEdgeDistance < EDGE_SNAP_THRESHOLD) {
+                return {
+                    mode: 'edge',
+                    point: nearestEdge.closestPoint,
+                    edge: nearestEdge,
+                    nearestCorner: nearestEdgeCorner,
+                    distance: nearestEdgeDistance
+                };
+            }
+            
+            return null;
+        }
+        
+        function showEdgeHighlight(edge) {
+            // remove existing highlight lines
+            if (edgeHighlightLine) {
+                scene.remove(edgeHighlightLine);
+                edgeHighlightLine = null;
+            }
+            
+            if (!edge) return;
+            
+            // line geometry
+            const points = [edge.start, edge.end];
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            const material = new THREE.LineBasicMaterial({
+                color: 0xff00ff,
+                linewidth: 3,
+                depthTest: false,
+                transparent: true,
+                opacity: 0.9
+            });
+            
+            edgeHighlightLine = new THREE.Line(geometry, material);
+            edgeHighlightLine.renderOrder = 999;
+            scene.add(edgeHighlightLine);
+        }
+        
+        function showCornerMarker(position) {
+            // remove existing marker
+            if (cornerMarker) {
+                scene.remove(cornerMarker);
+                cornerMarker = null;
+            }
+            
+            if (!position) return;
+            
+            // calculate marker size based on model bounds
+            const modelSize = ifcBounds ? Math.max(...ifcBounds.dimensions) : 1000;
+            const markerSize = modelSize * 0.015;  // 1.5% of largest dimension
+            
+            // create small red cube
+            const geometry = new THREE.BoxGeometry(markerSize, markerSize, markerSize);
+            const material = new THREE.MeshBasicMaterial({
+                color: 0xff0000,
+                depthTest: false,
+                transparent: true,
+                opacity: 0.95
+            });
+            
+            cornerMarker = new THREE.Mesh(geometry, material);
+            cornerMarker.position.copy(position);
+            cornerMarker.renderOrder = 1000;
+            scene.add(cornerMarker);
+        }
+        
+        function clearSnapVisuals(keepSnapData = false) {
+            if (edgeHighlightLine) {
+                scene.remove(edgeHighlightLine);
+                edgeHighlightLine = null;
+            }
+            if (cornerMarker) {
+                scene.remove(cornerMarker);
+                cornerMarker = null;
+            }
+            if (!keepSnapData) {
+                currentSnapPoint = null;
+                snapMode = null;
+            }
+        }
+        
+        function onBuildingMouseMove(event) {
+            if (!is3DViewerInitialized || ifcMeshes.length === 0) {
+                return;
+            }
+            
+            if (!raycaster || !mouse) {
+                return;
+            }
+            
+            const rect = renderer.domElement.getBoundingClientRect();
+            
+            // Calculate mouse position in normalized device coordinates 
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+            
+            // update the raycaster
+            raycaster.setFromCamera(mouse, camera);
+            
+            // calculate intersections
+            const intersects = raycaster.intersectObjects(ifcMeshes, false);
+            
+            if (intersects.length > 0) {
+                const intersection = intersects[0];
+                const intersectionPoint = intersection.point.clone();
+                
+                // find nearest edge or corner
+                const snapResult = findNearestEdgeOrCorner(intersectionPoint, intersection.object);
+                
+                if (snapResult) {
+                    // clear old visuals but keep snap data temporarily
+                    clearSnapVisuals(true);
+                    
+                    // set snap data
+                    currentSnapPoint = snapResult.point.clone();
+                    snapMode = snapResult.mode;
+                    
+                    console.log(`Snap detected: ${snapResult.mode} at distance ${snapResult.distance.toFixed(2)}`);
+                    
+                    if (snapResult.mode === 'corner') {
+                        //show only corner marker
+                        showCornerMarker(snapResult.point);
+                    } else if (snapResult.mode === 'edge') {
+                        //show edge highlight and corner marker at the closest point on the edge
+                        showEdgeHighlight(snapResult.edge);
+                        showCornerMarker(snapResult.point);  // Use the closest point on edge, not the corner
+                    }
+                } else {
+                    // no snap, clear visuals
+                    clearSnapVisuals();
+                }
+            } else {
+                // clear visual when no interaction
+                clearSnapVisuals();
+            }
         }
         
         function onWindowResize() {
@@ -975,18 +1199,17 @@
             mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
             mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
             
-            // Update the raycaster
             raycaster.setFromCamera(mouse, camera);
             
-            // Calculate intersections
             const intersects = raycaster.intersectObjects(ifcMeshes, false);
             
             if (intersects.length > 0) {
                 const intersection = intersects[0];
-                const point3D = intersection.point;
+                let point3D = intersection.point.clone();
+                if (currentSnapPoint && snapMode) {
+                    point3D = currentSnapPoint.clone();
+                }
                 
-                // Convert from meters to millimeters (ifcopenshell.geom returns meters, but IFC uses mm)
-                // This matches the behavior of the old 2D view
                 const point = {
                     screen: {
                         x: event.clientX - rect.left,
@@ -1001,26 +1224,21 @@
                 
                 buildingPoints[nextIndex] = point;
                 
-                // Add a visual marker in 3D space (use original meter coordinates for 3D scene)
                 addPointMarker(point3D, nextIndex);
                 
-                // Update UI
                 updateUI();
             }
         }
         
         function addPointMarker(position, index) {
-            // Remove existing marker for this point if it exists
-            const existingMarker = scene.children.find(child => 
-                child.userData && child.userData.pointIndex === index
+            const existingMarkers = scene.children.filter(child => 
+                child.userData && child.userData.pointIndex === index && child.userData.isMarker
             );
-            if (existingMarker) {
-                scene.remove(existingMarker);
-            }
+            existingMarkers.forEach(marker => scene.remove(marker));
             
-            // Calculate marker size based on model bounds (0.5% of largest dimension)
+            // marker size on double click
             const modelSize = ifcBounds ? Math.max(...ifcBounds.dimensions) : 1000;
-            const markerSize = modelSize * 0.005;
+            const markerSize = modelSize * 0.012;
             
             // Create a sphere marker
             const geometry = new THREE.SphereGeometry(markerSize, 16, 16);
@@ -1034,31 +1252,7 @@
             marker.userData.pointIndex = index;
             marker.userData.isMarker = true;
             
-            // Add label
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            canvas.width = 128;
-            canvas.height = 64;
-            context.fillStyle = '#ffffff';
-            context.fillRect(0, 0, canvas.width, canvas.height);
-            context.fillStyle = '#000000';
-            context.font = 'Bold 32px Arial';
-            context.textAlign = 'center';
-            context.textBaseline = 'middle';
-            context.fillText(`P${index + 1}`, canvas.width / 2, canvas.height / 2);
-            
-            const texture = new THREE.CanvasTexture(canvas);
-            const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
-            const sprite = new THREE.Sprite(spriteMaterial);
-            const labelSize = modelSize * 0.02;
-            sprite.scale.set(labelSize, labelSize * 0.5, 1);
-            sprite.position.copy(position);
-            sprite.position.z += markerSize * 3;  // Offset above the marker
-            sprite.userData.pointIndex = index;
-            sprite.userData.isMarker = true;
-            
             scene.add(marker);
-            scene.add(sprite);
         }
         
         function onMapClick(e) {
@@ -1204,14 +1398,12 @@
                 }
                 
             } else {
-                // Simplified conversion for other systems
                 easting = latlng.lng * 111320;
                 northing = latlng.lat * 110540;
             }
             
-            const elevation = 400; // Default elevation for Zurich area (Switzerland)
+            const elevation = 400;
             
-            // Validate map point distances to ensure reasonable building scale
             if (mapPoints.length > 0) {
                 const firstPoint = mapPoints[0];
                 const distance = calculateDistance(firstPoint.latlng.lat, firstPoint.latlng.lng, latlng.lat, latlng.lng);
@@ -1236,14 +1428,12 @@
             
             mapPoints[nextIndex] = point;
             
-            // Remove existing marker for this point if it exists
             map.eachLayer(function(layer) {
                 if (layer instanceof L.Marker && layer.options.pointIndex === nextIndex) {
                     map.removeLayer(layer);
                 }
             });
             
-            // Add marker to map
             const marker = L.marker([latlng.lat, latlng.lng], { pointIndex: nextIndex })
                 .addTo(map)
                 .bindPopup(`Point ${nextIndex + 1}<br>Lat: ${latlng.lat.toFixed(6)}<br>Lng: ${latlng.lng.toFixed(6)}<br>UTM: ${easting.toFixed(2)}, ${northing.toFixed(2)}`);
@@ -1252,7 +1442,6 @@
             updateManualEntryUI();
         }
         
-        // Function to add point manually by entering lat/lng
         function addManualPoint() {
             const existingPointIndex = mapPoints.findIndex(p => !p || Object.keys(p.coordinates).length === 0);
             const nextIndex = existingPointIndex !== -1 ? existingPointIndex : mapPoints.length;
@@ -1268,7 +1457,6 @@
             const lat = parseFloat(latInput.value);
             const lng = parseFloat(lngInput.value);
             
-            // Validate inputs
             if (isNaN(lat) || isNaN(lng)) {
                 alert('Please enter valid latitude and longitude values.');
                 return;
@@ -1284,14 +1472,11 @@
                 return;
             }
             
-            // Create a latlng object and process it like a map click
             const latlng = { lat: lat, lng: lng };
             
-            // Convert to selected coordinate system
             const epsg = document.getElementById('epsg-select').value;
             let easting, northing;
             
-            // Define proj4 coordinate systems
             if (typeof proj4 !== 'undefined') {
                 proj4.defs("EPSG:2056", "+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs");
             }
@@ -1312,14 +1497,12 @@
                     return;
                 }
             } else {
-                // Fallback for other coordinate systems
                 easting = lng * 111320;
                 northing = lat * 110540;
             }
             
-            const elevation = 400; // Default elevation for Zurich area (Switzerland)
+            const elevation = 400;
             
-            // Validate distance from first point
             if (mapPoints.length > 0) {
                 const firstPoint = mapPoints[0];
                 const distance = calculateDistance(firstPoint.latlng.lat, firstPoint.latlng.lng, lat, lng);
@@ -1343,22 +1526,18 @@
             
             mapPoints[nextIndex] = point;
             
-            // Remove existing marker for this point if it exists
             map.eachLayer(function(layer) {
                 if (layer instanceof L.Marker && layer.options.pointIndex === nextIndex) {
                     map.removeLayer(layer);
                 }
             });
             
-            // Add marker to map
             const marker = L.marker([lat, lng], { pointIndex: nextIndex })
                 .addTo(map)
                 .bindPopup(`Point ${nextIndex + 1}<br>Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}<br>E: ${easting.toFixed(2)}, N: ${northing.toFixed(2)}`);
             
-            // Pan map to the new marker
             map.setView([lat, lng], map.getZoom());
             
-            // Clear input fields
             latInput.value = '';
             lngInput.value = '';
             
@@ -1366,7 +1545,6 @@
             updateManualEntryUI();
         }
         
-        // Update manual entry UI to show current point number
         function updateManualEntryUI() {
             const pointNumber = mapPoints.length + 1;
             const pointNumberSpan = document.getElementById('current-point-number');
@@ -1374,7 +1552,6 @@
                 pointNumberSpan.textContent = pointNumber;
             }
             
-            // Disable manual entry if we have 3 points already
             const manualLat = document.getElementById('manual-lat');
             const manualLng = document.getElementById('manual-lng');
             if (mapPoints.length >= 3) {
@@ -1386,7 +1563,6 @@
             }
         }
         
-        // Helper function to calculate distance between two lat/lng points
         function calculateDistance(lat1, lng1, lat2, lng2) {
             const R = 6371000; // Earth's radius in meters
             const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -1398,7 +1574,6 @@
             return R * c;
         }
         
-        // Unit conversion functions for building coordinates
         function convertToMm(value, fromUnit) {
             switch(fromUnit) {
                 case 'mm': return value;
@@ -1422,14 +1597,13 @@
         function convertBuildingUnits() {
             const newUnit = document.getElementById('building-unit').value;
             
-            // Convert all existing values to the new unit
             for (let i = 0; i < 3; i++) {
                 const xInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="x"]`);
                 const yInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="y"]`);
                 const zInput = document.querySelector(`.building-coord[data-point="${i}"][data-axis="z"]`);
                 
                 if (xInput && xInput.value && buildingPoints[i]) {
-                    const xMm = buildingPoints[i].building.x; // Always stored in mm
+                    const xMm = buildingPoints[i].building.x;
                     xInput.value = convertFromMm(xMm, newUnit).toFixed(6);
                 }
                 
@@ -1646,6 +1820,9 @@
                 );
                 markersToRemove.forEach(marker => scene.remove(marker));
             }
+            
+            // Clear snap visuals
+            clearSnapVisuals();
             
             // Clear building coordinate inputs in table
             document.querySelectorAll('.building-coord').forEach(input => {
