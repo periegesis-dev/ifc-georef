@@ -1,0 +1,32 @@
+services:
+  ifc-georef:
+    build:
+      context: .
+      target: runtime
+    image: ifc-georef:latest
+    container_name: ifc-georef
+    ports:
+      - "${PORT:-5002}:5002"
+    environment:
+      API_BASE_URL: ${API_BASE_URL:-https://dev-backend.geodatahub.ch}
+      SECRET_KEY: ${SECRET_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      DEFAULT_EPSG: ${DEFAULT_EPSG:-2056}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-500}
+      MAX_PARALLEL_JOBS: ${MAX_PARALLEL_JOBS:-2}
+      JOB_TTL_HOURS: ${JOB_TTL_HOURS:-24}
+      ELEVATION_LOOKUP: ${ELEVATION_LOOKUP:-all}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # Docker-managed volume: ~90x faster than a Windows bind mount for IFC writes.
+      - georef-data:/app/data
+    restart: unless-stopped
+
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+
+volumes:
+  georef-data:

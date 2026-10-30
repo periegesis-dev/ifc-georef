@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IFC Georeferencing</title>
+  <link rel="icon" href="{{ asset('img/favicon.png') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" crossorigin>
+  <link rel="stylesheet" href="{{ asset('css/app.css') }}">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+      "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.6/build/index.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="{{ asset('img/logo.webp') }}" alt="GeoProfile" height="26">
+      <span class="brand-title">IFC Georeferencing</span>
+    </div>
+    <ol class="stepper" id="stepper">
+      <li data-step="upload"><span class="num">1</span><span class="label">Upload</span></li>
+      <li data-step="crs"><span class="num">2</span><span class="label">Coordinate system</span></li>
+      <li data-step="place"><span class="num">3</span><span class="label">Placement</span></li>
+      <li data-step="save"><span class="num">4</span><span class="label">Save</span></li>
+    </ol>
+    <div class="project-badge" id="project-badge" hidden></div>
+  </header>
+
+  <div class="filebar" id="filebar" hidden>
+    <span class="file-icon" aria-hidden="true">IFC</span>
+    <span class="file-name" id="filebar-name"></span>
+    <span class="chips" id="filebar-chips"></span>
+    <button class="btn ghost small" id="filebar-new" type="button">New file</button>
+  </div>
+
+  <main>
+    <!-- 1. Upload ---------------------------------------------------------->
+    <section class="step" id="step-upload" data-step="upload">
+      <div class="card narrow">
+        <h1>Place your IFC model on the map</h1>
+        <p class="lead">Upload a model. Everything that can be read from the file is filled in for you:
+          units, site location, existing georeferencing and suggested coordinate systems.</p>
+        <label class="dropzone" id="dropzone" tabindex="0">
+          <input id="file-input" type="file" accept=".ifc,.ifczip">
+          <svg width="44" height="44" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3l5 5h-3v6h-4V8H7l5-5zm-7 14h14v2H5v-2z"/></svg>
+          <strong>Drop an .ifc file here or <span class="link">browse</span></strong>
+          <small>IFC2X3, IFC4 and IFC4X3 &middot; .ifc or .ifczip &middot; up to <span id="max-upload"></span> MB</small>
+        </label>
+        <div id="upload-progress" class="progress-panel" hidden></div>
+        <div id="upload-error" class="alert error" role="alert" hidden></div>
+        <div id="upload-summary" hidden></div>
+      </div>
+    </section>
+
+    <!-- 2. Coordinate system ------------------------------------------------>
+    <section class="step" id="step-crs" data-step="crs" hidden>
+      <div class="grid two">
+        <div class="card">
+          <h2>Where is the building?</h2>
+          <p class="muted" id="loc-source"></p>
+          <form class="search-row" id="place-form">
+            <input id="place-search" type="search" placeholder="Search an address or place" autocomplete="off">
+            <button class="btn ghost" type="submit">Search</button>
+          </form>
+          <ul class="dropdown" id="place-results" hidden></ul>
+          <div id="loc-map" class="map map-medium"></div>
+          <p class="hint">Click the map to set or correct the approximate location. It is used to suggest
+            coordinate systems and to check that the chosen one covers the building.</p>
+        </div>
+        <div class="card">
+          <h2>Coordinate system</h2>
+          <p class="muted" id="crs-intro"></p>
+          <div class="choice-list" id="crs-suggestions"></div>
+          <div class="field">
+            <label for="crs-search">Search all coordinate systems</label>
+            <div class="combo">
+              <input id="crs-search" type="search" placeholder="Country, name or EPSG code, e.g. 2056" autocomplete="off">
+              <ul class="dropdown" id="crs-results" hidden></ul>
+            </div>
+          </div>
+          <div class="selected-crs" id="crs-selected"></div>
+          <div class="actions">
+            <button class="btn ghost" type="button" data-go="upload">Back</button>
+            <button class="btn primary" type="button" id="crs-next" disabled>Continue</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Placement: one-screen workspace, controls left, views right ----------->
+    <section class="step step-place" id="step-place" data-step="place" hidden>
+      <aside class="side" aria-label="Placement controls">
+        <div class="side-scroll">
+          <section class="side-section">
+            <div class="side-title">
+              <h2>Control points</h2>
+              <span class="muted small" id="points-count"></span>
+            </div>
+            <p class="hint-box" id="points-hint"></p>
+            <div class="alert info small-alert" id="existing-note" hidden></div>
+            <label class="check site-row" id="use-site-row">
+              <input type="checkbox" id="use-site">
+              <span>Use the location stored in the IFC file<br><span class="muted small" id="use-site-detail"></span></span>
+            </label>
+            <ul class="pt-list" id="points-body"></ul>
+            <div class="side-actions">
+              <button class="btn primary small" type="button" id="add-point">+ Pick a point</button>
+              <button class="btn ghost small" type="button" id="type-point">Type</button>
+              <button class="btn ghost small" type="button" id="paste-toggle">Paste</button>
+            </div>
+            <div class="paste-box" id="paste-box" hidden>
+              <label for="paste-text">One point per line: <code>X Y Z E N H</code> (Z and H optional).
+                Spaces, tabs, commas or semicolons; paste straight from Excel.</label>
+              <textarea id="paste-text" rows="4" spellcheck="false"></textarea>
+              <div class="actions left">
+                <button class="btn primary small" type="button" id="paste-add">Add points</button>
+                <button class="btn ghost small" type="button" id="paste-close">Close</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="side-section">
+            <div class="side-title"><h2>Result</h2></div>
+            <dl class="stats compact" id="solution-stats"></dl>
+            <ul class="warnings" id="solution-warnings"></ul>
+            <label class="check small" id="allow-outside-row" hidden><input type="checkbox" id="allow-outside"> I understand, save anyway</label>
+          </section>
+
+          <section class="side-section">
+            <div class="side-title">
+              <h2>Adjust</h2>
+              <div class="title-tools">
+                <label class="sr-only" for="nudge-step">Step size</label>
+                <select id="nudge-step" class="mini" title="Step size of the move and rotate buttons">
+                  <option value="0.01">step 1 cm · 0.01°</option>
+                  <option value="0.1" selected>step 10 cm · 0.1°</option>
+                  <option value="1">step 1 m · 1°</option>
+                  <option value="10">step 10 m · 5°</option>
+                </select>
+                <button class="link-btn" type="button" id="reset-adjust">Reset</button>
+              </div>
+            </div>
+            <div class="adjust-row">
+              <div class="adjust">
+                <label for="rotation-input">Rotation</label>
+                <div class="input-suffix"><input id="rotation-input" type="number" step="0.01" inputmode="decimal"
+                  title="Type a value to set the rotation by hand"><span>°</span></div>
+                <button class="link-btn" type="button" id="rotation-auto" title="Back to the automatic rotation">auto</button>
+                <label for="height-input">Height</label>
+                <div class="input-suffix"><input id="height-input" type="number" step="0.01" inputmode="decimal"
+                  title="Type a value to set the origin height by hand"><span id="height-unit">m</span></div>
+                <button class="link-btn" type="button" id="height-auto" title="Back to the automatic height">auto</button>
+              </div>
+              <div class="pad" role="group" aria-label="Move and rotate the model">
+                <button type="button" data-nudge="ccw" title="Rotate counter-clockwise">&#10226;</button>
+                <button type="button" data-nudge="n" title="Move north">&uarr;</button>
+                <button type="button" data-nudge="cw" title="Rotate clockwise">&#10227;</button>
+                <button type="button" data-nudge="w" title="Move west">&larr;</button>
+                <span class="pad-center">move</span>
+                <button type="button" data-nudge="e" title="Move east">&rarr;</button>
+                <span></span>
+                <button type="button" data-nudge="s" title="Move south">&darr;</button>
+                <span></span>
+              </div>
+            </div>
+            <label class="check small fit-scale" id="free-scale-row" hidden title="Needs 2 or more points that are well apart">
+              <input type="checkbox" id="free-scale"> Fit the scale from the points (advanced)</label>
+          </section>
+        </div>
+        <div class="side-footer">
+          <button class="btn ghost" type="button" data-go="crs">Back</button>
+          <button class="btn primary" type="button" id="place-next" disabled>Continue</button>
+        </div>
+      </aside>
+
+      <div class="views">
+        <div class="banner" id="pick-banner" hidden>
+          <span id="pick-text"></span>
+          <button class="btn ghost small" type="button" id="pick-cancel">Cancel (Esc)</button>
+        </div>
+        <div class="card view-card">
+          <div class="card-head">
+            <h2>Model</h2>
+            <div class="tools">
+              <label class="check small"><input type="checkbox" id="snap-toggle" checked> Snap</label>
+              <button class="btn ghost small" type="button" id="view-top">Top</button>
+              <button class="btn ghost small" type="button" id="view-fit">Fit</button>
+            </div>
+          </div>
+          <div class="viewer" id="viewer">
+            <div class="overlay" id="viewer-overlay"></div>
+          </div>
+        </div>
+        <div class="card view-card">
+          <div class="card-head">
+            <h2>Map</h2>
+            <div class="tools">
+              <div class="seg" role="group" aria-label="Map view">
+                <button type="button" class="seg-btn active" data-target="place" data-view="2d">2D</button>
+                <button type="button" class="seg-btn" data-target="place" data-view="3d">3D</button>
+              </div>
+              <select id="basemap" aria-label="Background map"></select>
+              <button class="btn ghost small" type="button" id="map-fit" title="Zoom to the model">Zoom</button>
+            </div>
+          </div>
+          <div class="map map-large" id="place-map"></div>
+          <div class="map map-large" id="place-map3d" hidden></div>
+          <p class="map-note" id="place-map3d-note" hidden></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. Save --------------------------------------------------------------->
+    <section class="step" id="step-save" data-step="save" hidden>
+      <div class="grid two">
+        <div class="card">
+          <div class="card-head">
+            <h2>Review</h2>
+            <div class="seg" role="group" aria-label="Map view">
+              <button type="button" class="seg-btn active" data-target="save" data-view="2d">2D</button>
+              <button type="button" class="seg-btn" data-target="save" data-view="3d">3D</button>
+            </div>
+          </div>
+          <dl class="stats" id="save-summary"></dl>
+          <div id="save-map" class="map map-medium"></div>
+          <div id="save-map3d" class="map map-medium" hidden></div>
+          <p class="map-note" id="save-map3d-note" hidden></p>
+        </div>
+        <div class="card">
+          <h2>Save</h2>
+          <p class="muted">The original file is kept unchanged. A copy is written with the georeferencing added
+            (IfcMapConversion for IFC4, ePSet_MapConversion for IFC2X3) and checked by reading it back.</p>
+          <div id="save-progress" class="progress-panel" hidden></div>
+          <div id="save-error" class="alert error" role="alert" hidden></div>
+          <div class="actions" id="save-actions">
+            <button class="btn ghost" type="button" data-go="place">Back</button>
+            <button class="btn primary" type="button" id="save-btn">Write georeferenced IFC</button>
+          </div>
+          <div id="done-panel" hidden>
+            <div class="alert success" id="done-text"></div>
+            <div class="actions left">
+              <a class="btn primary" id="download-btn" href="#" download>Download IFC</a>
+              <button class="btn secondary" type="button" id="project-upload-btn" hidden>Upload to project</button>
+            </div>
+            <p class="muted small" id="project-hint"></p>
+            <div id="project-progress" class="progress-panel" hidden></div>
+            <div id="project-result" class="alert" role="status" hidden></div>
+            <div class="actions left">
+              <button class="btn ghost" type="button" id="restart-btn">Georeference another file</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" crossorigin></script>
+  <script>window.APP_CONFIG = {{ app_config | tojson }};</script>
+  <script type="module" src="{{ asset('js/main.js') }}"></script>
+</body>
+</html>
