@@ -102,6 +102,20 @@ def job_model(job_id):
     return Response(gzip.decompress(path.read_bytes()), mimetype="model/gltf-binary")
 
 
+@bp.get("/api/jobs/<job_id>/edges.bin")
+def job_edges(job_id):
+    """Feature edges for snapping: float32 segments (x1, y1, z1, x2, y2, z2) in the glTF frame."""
+    path = _jobs().dir(job_id) / "edges.bin.gz"
+    if not path.exists():
+        return api_error("No snapping edges for this file.", 404)
+    if "gzip" in request.headers.get("Accept-Encoding", ""):
+        response = send_file(path, mimetype="application/octet-stream", max_age=86400, conditional=True, etag=True)
+        response.headers["Content-Encoding"] = "gzip"
+        response.headers["Vary"] = "Accept-Encoding"
+        return response
+    return Response(gzip.decompress(path.read_bytes()), mimetype="application/octet-stream")
+
+
 def _placement_inputs(job_id):
     jobs = _jobs()
     meta = jobs.read(job_id, "meta.json")
@@ -125,7 +139,7 @@ def job_georeference(job_id):
     if not result["can_save"]:
         return api_error(result["solution"]["warnings"][0]["message"], 422, "outside_area")
     jobs.submit_process(job_id, "georeference", tasks.georeference, str(jobs.dir(job_id)),
-                        result["solution"], result["crs"])
+                        result["solution"], result["crs"], result["gdh"])
     return jsonify({"started": True, **jobs.status(job_id)}), 202
 
 
@@ -152,8 +166,63 @@ def job_upload(job_id):
     authorization = (request.headers.get("Authorization") or "").strip()[:1000] or None
     jobs.submit_thread(job_id, "upload", tasks.upload_to_project, str(jobs.dir(job_id)),
                        current_app.config["API_BASE_URL"], project_id, authorization,
-                       current_app.config["UPLOAD_TIMEOUT"])
+                       current_app.config["UPLOAD_TIMEOUT"], payload.get("filename") or None)
     return jsonify({"started": True, **jobs.status(job_id)}), 202
+
+
+# ---- GeoDataHub project files -------------------------------------------------
+PROJECT_ERRORS = {
+    401: "Your GeoDataHub login has expired or is invalid. Log in again and reopen this tool from the project.",
+    403: "You don't have access to this project's files.",
+    404: "The project was not found on the server.",
+}
+
+
+def _project_files(project_id):
+    """The project's IFC files from the GeoDataHub backend (same call as the frontend's BIM tab)."""
+    import requests
+
+    if not PROJECT_ID.match(project_id or ""):
+        raise JobError("A valid project id is needed.")
+    headers = {}
+    authorization = (request.headers.get("Authorization") or "").strip()[:1000]
+    if authorization:
+        headers["Authorization"] = authorization
+    try:
+        response = requests.get(f"{current_app.config['API_BASE_URL']}/api/ifc/{project_id}/",
+                                headers=headers, timeout=(10, 60))
+    except requests.exceptions.RequestException:
+        raise JobError("Could not reach the project server.", 502) from None
+    if not response.ok:
+        raise JobError(PROJECT_ERRORS.get(response.status_code,
+                                          f"The project server answered {response.status_code}."),
+                       response.status_code if response.status_code in PROJECT_ERRORS else 502)
+    try:
+        data = response.json()
+    except ValueError:
+        raise JobError("The project server sent an unexpected answer.", 502) from None
+    files = data.get("ifc_files") if isinstance(data, dict) else data
+    return [f for f in (files or []) if isinstance(f, dict) and f.get("s3_key")]
+
+
+@bp.get("/api/project/<project_id>/ifc-files")
+def project_files(project_id):
+    files = _project_files(project_id)
+    return jsonify({"files": [{k: f.get(k) for k in ("filename", "s3_key", "size", "last_modified")}
+                              for f in files]})
+
+
+@bp.post("/api/jobs/from-project")
+def create_job_from_project():
+    payload = request.get_json(silent=True) or {}
+    project_id = str(payload.get("project_id") or "")
+    s3_key = str(payload.get("s3_key") or "")
+    if not s3_key:
+        return api_error("Choose a file of the project.")
+    jobs = _jobs()
+    job_id = jobs.create_from_project(_project_files(project_id), s3_key, project_id)
+    log.info("job %s created from project %s", job_id, project_id)
+    return jsonify({"job_id": job_id, **jobs.status(job_id)}), 201
 
 
 # ---- coordinate systems & helpers -------------------------------------------
@@ -220,7 +289,8 @@ def analyze_georeferencing():
     name = secure_filename(storage.filename) or "model.ifc"
     path = _legacy_temp_file(storage)
     try:
-        return jsonify(_jobs().run_sync(tasks.legacy_analyze, str(path), name))
+        jobs = _jobs()
+        return jsonify(jobs.run_sync(tasks.legacy_analyze, str(path), name, str(jobs.cache_dir), jobs.threads))
     except Exception as exc:
         log.warning("analyze-georeferencing failed: %s", exc)
         return jsonify({"error": f"Error analyzing IFC file: {exc}", "is_georeferenced": False}), 500

@@ -315,6 +315,63 @@ def to_mercator(lonlats):
     return [t.transform(lon, lat) for lon, lat in lonlats]
 
 
+def grid_to_mercator(code, e, n, step=10.0):
+    """Local linear map from CRS grid coordinates to Web Mercator around (e, n).
+
+    merc ≈ ref_merc + J · (grid − ref_grid). Lets the browser draw and drag the
+    model without a server round trip; the server's exact values replace it.
+    """
+    pts = to_wgs84(code, [(e, n), (e + step, n), (e, n + step)])
+    if any(lat is None for _, lat in pts):
+        return None
+    (x0, y0), (xe, ye), (xn, yn) = to_mercator(pts)
+    return {
+        "ref_grid": [e, n],
+        "ref_merc": [x0, y0],
+        "jacobian": [[(xe - x0) / step, (xn - x0) / step], [(ye - y0) / step, (yn - y0) / step]],
+    }
+
+
+_NORMALISE = re.compile(r"[^a-z0-9]+")
+
+
+def _norm(text):
+    return _NORMALISE.sub(" ", (text or "").lower()).strip()
+
+
+@lru_cache(maxsize=256)
+def resolve_epsg(name=None, description=None, datum=None, projection=None, zone=None):
+    """EPSG code for a CRS that a file describes without "EPSG:nnnn" (None if unsure).
+
+    Tries, in order: a known CRS name ("CH1903+ / LV95"), pyproj's own matching of
+    the text, and UTM zones given as datum + zone ("ETRS89", "32N").
+    """
+    texts = [t for t in (name, description) if t]
+    catalogue = {_norm(c.name): int(c.code) for c in _projected_catalogue()}
+    for text in texts:
+        code = catalogue.get(_norm(text))
+        if code:
+            return code
+    for text in texts:
+        try:
+            crs = CRS.from_user_input(text)
+            code = crs.to_epsg(min_confidence=70)
+            if code and crs.is_projected:
+                return int(code)
+        except Exception:
+            continue
+    m = re.match(r"^\s*(\d{1,2})\s*([NS])?\s*$", zone or "", re.IGNORECASE)
+    if m and ("utm" in (projection or "").lower() or "transverse" in (projection or "").lower() or not projection):
+        number, hemisphere = int(m.group(1)), (m.group(2) or "N").upper()
+        if 1 <= number <= 60:
+            d = (datum or "").upper()
+            if "ETRS" in d and hemisphere == "N" and 28 <= number <= 38:
+                return 25800 + number
+            if "WGS" in d or not d:
+                return (32600 if hemisphere == "N" else 32700) + number
+    return None
+
+
 def true_north_in_grid(code, lat, lon):
     """Angle (radians, counter-clockwise from the grid easting axis) of true north
     at the given location. 90 degrees when grid north and true north coincide."""

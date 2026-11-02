@@ -26,9 +26,11 @@ log = logging.getLogger(__name__)
 
 JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 SHA = re.compile(r"^[0-9a-f]{64}$")
-CACHED_FILES = ("meta.json", "geometry.json", "model.glb.gz")
+CACHED_FILES = ("meta.json", "geometry.json", "model.glb.gz", "edges.bin.gz")
+REQUIRED_CACHED = ("meta.json", "geometry.json")
 TASK_STEPS = {"prepare": tasks.PREPARE_STEPS, "georeference": tasks.GEOREF_STEPS,
-              "upload": tasks.UPLOAD_STEPS}
+              "upload": tasks.UPLOAD_STEPS, "fetch": tasks.FETCH_STEPS}
+MAX_ZIP_ENTRIES = 1000
 
 
 class JobError(Exception):
@@ -48,6 +50,8 @@ class Jobs:
         self.threads = config["GEOMETRY_THREADS"]
         self.job_ttl = config["JOB_TTL_HOURS"] * 3600
         self.cache_ttl = config["CACHE_TTL_HOURS"] * 3600
+        self.max_bytes = config["MAX_CONTENT_LENGTH"]
+        self.max_unpacked = config["MAX_CONTENT_LENGTH"] * 4
         self._pool = None
         self._pool_lock = threading.Lock()
         self._io = ThreadPoolExecutor(max_workers=4, thread_name_prefix="job-io")
@@ -65,64 +69,102 @@ class Jobs:
         return path
 
     # ---- creation ----------------------------------------------------------
-    def create(self, stream, filename):
-        """Store an uploaded file (streamed, hashed) and start processing it."""
+    def _new_job(self, filename, source=None):
         job_id = uuid.uuid4().hex
         job = self.jobs_dir / job_id
         (job / "tasks").mkdir(parents=True)
+        write_json(job / "job.json", {"id": job_id, "filename": filename, "created_at": time.time(),
+                                      "source": source or {"type": "upload"}})
+        return job_id, job
+
+    def create(self, stream, filename):
+        """Store an uploaded file (streamed) and start processing it."""
+        job_id, job = self._new_job(filename)
         try:
-            raw = job / "upload.part"
-            digest, size = hashlib.sha256(), 0
-            with open(raw, "wb") as fh:
-                while True:
-                    chunk = stream.read(1 << 20)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
-                    digest.update(chunk)
-                    size += len(chunk)
-            if size == 0:
-                raise JobError("The uploaded file is empty.")
-            original = job / "original.ifc"
-            if zipfile.is_zipfile(raw):
-                self._extract_ifczip(raw, original)
-                raw.unlink()
-            else:
-                raw.replace(original)
-            with open(original, "rb") as fh:
-                head = fh.read(2048)
-            if b"ISO-10303-21" not in head:
-                raise JobError("This is not an IFC file. Please upload an .ifc (STEP) or .ifczip file.")
-            sha = digest.hexdigest()
-            write_json(job / "job.json", {
-                "id": job_id, "filename": filename, "size": original.stat().st_size,
-                "upload_size": size, "sha256": sha, "created_at": time.time(),
-            })
+            with open(job / "upload.part", "wb") as fh:
+                shutil.copyfileobj(stream, fh, 1 << 20)
+            cached = self._finish_upload(job)
         except Exception:
             shutil.rmtree(job, ignore_errors=True)
             raise
+        return job_id, cached
 
-        if self._use_cache(job, sha, filename):
-            return job_id, True
-        self.submit_process(job_id, "prepare", tasks.prepare, str(job),
-                            str(self.cache_dir / sha), self.threads)
-        return job_id, False
+    def _finish_upload(self, job):
+        """upload.part -> original.ifc (unzipped, checked, hashed), then reuse the cache or start reading."""
+        raw = job / "upload.part"
+        size = raw.stat().st_size
+        if size == 0:
+            raise JobError("The uploaded file is empty.")
+        original = job / "original.ifc"
+        if zipfile.is_zipfile(raw):
+            self._extract_ifczip(raw, original)
+            raw.unlink()
+        else:
+            raw.replace(original)
+        with open(original, "rb") as fh:
+            head = fh.read(2048)
+        if b"ISO-10303-21" not in head:
+            raise JobError("This is not an IFC file. Please upload an .ifc (STEP) or .ifczip file.")
+        digest = hashlib.sha256()
+        with open(original, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        sha = digest.hexdigest()
+        info = read_json(job / "job.json", {})
+        info.update(size=original.stat().st_size, upload_size=size, sha256=sha)
+        write_json(job / "job.json", info)
+        if self._use_cache(job, sha, info.get("filename")):
+            return True
+        self.submit_process(job.name, "prepare", tasks.prepare, str(job), str(self.cache_dir / sha), self.threads)
+        return False
 
-    @staticmethod
-    def _extract_ifczip(archive, target):
+    def _extract_ifczip(self, archive, target):
         with zipfile.ZipFile(archive) as zf:
-            members = [m for m in zf.infolist() if m.filename.lower().endswith(".ifc") and not m.is_dir()]
+            entries = zf.infolist()
+            if len(entries) > MAX_ZIP_ENTRIES:
+                raise JobError(f"The .ifczip archive has more than {MAX_ZIP_ENTRIES} entries.")
+            if sum(m.file_size for m in entries) > self.max_unpacked:
+                raise JobError(f"The .ifczip archive unpacks to more than "
+                               f"{self.max_unpacked // (1024 * 1024)} MB.")
+            members = [m for m in entries if m.filename.lower().endswith(".ifc") and not m.is_dir()]
             if not members:
                 raise JobError("The .ifczip archive does not contain an .ifc file.")
+            written = 0
             with zf.open(max(members, key=lambda m: m.file_size)) as src, open(target, "wb") as dst:
-                shutil.copyfileobj(src, dst, 1 << 20)
+                for chunk in iter(lambda: src.read(1 << 20), b""):
+                    written += len(chunk)
+                    if written > self.max_unpacked:  # do not trust the sizes in the archive header
+                        raise JobError("The .ifczip archive unpacks to more than the allowed size.")
+                    dst.write(chunk)
+
+    def create_from_project(self, files, s3_key, project_id):
+        """Start a job from a file of a GeoDataHub project (entry of the project's file listing)."""
+        entry = next((f for f in files if f.get("s3_key") == s3_key), None)
+        if entry is None:
+            raise JobError("That file is not in the project (any more).", 404)
+        url = entry.get("url") or ""
+        if not url.lower().startswith(("https://", "http://")):
+            raise JobError("The project server gave no download address for this file.", 502)
+        filename = entry.get("filename") or s3_key.rsplit("/", 1)[-1] or "model.ifc"
+        job_id, job = self._new_job(filename, {"type": "project", "project_id": project_id, "s3_key": s3_key})
+        self.submit_thread(job_id, "fetch", tasks.fetch_from_project, str(job), url, self.max_bytes,
+                           self._after_fetch)
+        return job_id
+
+    def _after_fetch(self, job_id):
+        job = self.jobs_dir / job_id
+        try:
+            self._finish_upload(job)
+        except JobError as exc:
+            write_json(job / "tasks" / "prepare.json", {**queued_task("prepare", TASK_STEPS["prepare"]),
+                                                         "state": "error", "error": str(exc)})
 
     def _use_cache(self, job, sha, filename):
         cache = self.cache_dir / sha
         meta = read_json(cache / "meta.json")
         if not meta or meta.get("version") != META_VERSION:
             return False
-        if not all((cache / name).exists() for name in CACHED_FILES if name != "model.glb.gz"):
+        if not all((cache / name).exists() for name in REQUIRED_CACHED):
             return False
         geometry = read_json(cache / "geometry.json", {})
         if not geometry.get("empty") and not (cache / "model.glb.gz").exists():
@@ -223,7 +265,7 @@ class Jobs:
                 task["progress"] = overall(task)
                 task_states[path.stem] = task
         return {
-            "job": {k: info.get(k) for k in ("id", "filename", "size", "created_at")},
+            "job": {k: info.get(k) for k in ("id", "filename", "size", "created_at", "source")},
             "tasks": task_states,
             "meta": read_json(job / "meta.json"),
             "geometry": read_json(job / "geometry.json"),

@@ -149,9 +149,10 @@ def test_legacy_analyze_endpoint_keeps_its_shape(client):
     assert {"eastings", "northings", "orthogonal_height", "scale"} <= set(mc)
     box = data["bounding_box_world"]
     assert {"easting", "northing", "elevation"} <= set(box["min"])
-    # elevation is in map units: scale * z + orthogonal height (not raw millimetres)
-    lo_z = data["coordinates_info"]["bounds"]["min_z"]
-    assert box["min"]["elevation"] == pytest.approx(lo_z * mc["scale"] + mc["orthogonal_height"])
+    # elevation is in map units (scale * z + orthogonal height) from the mesh extents, not raw millimetres
+    assert box["source"] == "geometry"
+    # the model is 3.83 m tall; the file's own scale (written by the old app) applies to it
+    assert box["max"]["elevation"] - box["min"]["elevation"] == pytest.approx(3828.7 * mc["scale"], rel=0.01)
     assert {"latitude", "longitude"} <= set(data["world_coordinates"]["wgs84"])
     assert {"x", "y", "z"} <= set(data["world_coordinates"]["three_js"])
 

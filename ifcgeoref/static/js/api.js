@@ -58,8 +58,15 @@ export const api = {
   status: (id) => call('GET', `/api/jobs/${id}`),
   solve: (id, payload) => call('POST', `/api/jobs/${id}/solve`, { json: payload }),
   georeference: (id, payload) => call('POST', `/api/jobs/${id}/georeference`, { json: payload }),
-  uploadToProject: (id, projectId, token) => call('POST', `/api/jobs/${id}/upload`, {
-    json: { project_id: projectId },
+  uploadToProject: (id, projectId, token, filename) => call('POST', `/api/jobs/${id}/upload`, {
+    json: { project_id: projectId, filename },
+    headers: token ? { Authorization: `Token ${token}` } : {},
+  }),
+  projectFiles: (projectId, token) => call('GET', `/api/project/${encodeURIComponent(projectId)}/ifc-files`, {
+    headers: token ? { Authorization: `Token ${token}` } : {},
+  }),
+  openFromProject: (projectId, s3Key, token) => call('POST', '/api/jobs/from-project', {
+    json: { project_id: projectId, s3_key: s3Key },
     headers: token ? { Authorization: `Token ${token}` } : {},
   }),
   suggest: (lat, lon) => call('GET', `/api/crs/suggest?${q({ lat, lon })}`),
@@ -71,4 +78,5 @@ export const api = {
 };
 
 export const modelUrl = (id) => `/api/jobs/${id}/model.glb`;
+export const edgesUrl = (id) => `/api/jobs/${id}/edges.bin`;
 export const downloadUrl = (id) => `/api/jobs/${id}/download`;

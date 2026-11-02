@@ -3,6 +3,7 @@
 Runs in worker processes (it needs ifcopenshell); the result is plain JSON so the
 web process never has to parse IFC files itself.
 """
+import json
 import math
 import re
 from collections import Counter
@@ -11,7 +12,7 @@ import ifcopenshell
 import ifcopenshell.util.placement
 import ifcopenshell.util.unit
 
-META_VERSION = 4
+META_VERSION = 6
 
 UNIT_SYMBOLS = {
     "METRE": "m", "MILLIMETRE": "mm", "CENTIMETRE": "cm", "DECIMETRE": "dm", "KILOMETRE": "km",
@@ -140,7 +141,11 @@ def georef_info(ifc_file, site=None):
                 "x_axis_abscissa": _num(op.XAxisAbscissa) if op.XAxisAbscissa is not None else 1.0,
                 "x_axis_ordinate": _num(op.XAxisOrdinate) if op.XAxisOrdinate is not None else 0.0,
                 "scale": _num(op.Scale) if op.Scale is not None else 1.0,
+                "crs_params": {k: getattr(crs, k, None) for k in ("GeodeticDatum", "MapProjection", "MapZone")}
+                if crs else {},
             }
+            if op.is_a("IfcMapConversionScaled"):  # IFC4X3 ADD2: anisotropic factors, kept on rewrite
+                info["factors"] = [_num(op.FactorX) or 1.0, _num(op.FactorY) or 1.0, _num(op.FactorZ) or 1.0]
     if ifc_file.schema == "IFC2X3":
         site = site or next(iter(ifc_file.by_type("IfcSite")), None)
         if site is not None:
@@ -165,10 +170,66 @@ def georef_info(ifc_file, site=None):
                         "x_axis_abscissa": _num(values.get("XAxisAbscissa")) if values.get("XAxisAbscissa") is not None else 1.0,
                         "x_axis_ordinate": _num(values.get("XAxisOrdinate")) if values.get("XAxisOrdinate") is not None else 0.0,
                         "scale": _num(values.get("Scale")) if values.get("Scale") is not None else 1.0,
+                        "crs_description": (pc or {}).get("properties", {}).get("Description", {}).get("value"),
+                        "crs_params": {k: (pc or {}).get("properties", {}).get(k, {}).get("value")
+                                       for k in ("GeodeticDatum", "MapProjection", "MapZone")},
                     })
     if info.get("present"):
         info["rotation_deg"] = math.degrees(math.atan2(info["x_axis_ordinate"], info["x_axis_abscissa"]))
+        if info.get("epsg") is None and (info.get("crs_name") or info.get("crs_description")):
+            # No "EPSG:nnnn" in the name: match the CRS by its name or parameters instead.
+            from .crs import resolve_epsg
+            params = info.get("crs_params") or {}
+            try:
+                code = resolve_epsg(info.get("crs_name"), info.get("crs_description"), params.get("GeodeticDatum"),
+                                    params.get("MapProjection"), params.get("MapZone"))
+            except Exception:
+                code = None
+            info["epsg"] = code
+            info["epsg_matched"] = code is not None
+            info["crs_unresolved"] = code is None
+        # Where the georeferencing puts the model origin: more reliable than IfcSite, which
+        # writers (this tool included) often leave at its old value.
+        info["latitude"] = info["longitude"] = None
+        if info.get("epsg") and info.get("eastings") is not None and info.get("northings") is not None:
+            from .crs import to_wgs84
+            try:
+                lon, lat = to_wgs84(info["epsg"], [(info["eastings"], info["northings"])])[0]
+            except Exception:
+                lon = lat = None
+            if lat is not None and -90 <= lat <= 90 and -180 <= lon <= 180:
+                info["latitude"], info["longitude"] = lat, lon
     return info
+
+
+GDH_PSET = "GDH_Georeferencing"
+
+
+def gdh_info(project):
+    """Placement data this tool stored in the file (GDH_Georeferencing on IfcProject)."""
+    if project is None:
+        return None, None
+    entry = _property_sets(project).get(GDH_PSET)
+    if not entry:
+        return None, None
+    prop = entry["properties"].get("Data")
+    data = None
+    if prop and isinstance(prop.get("value"), str):
+        try:
+            data = json.loads(prop["value"])
+        except ValueError:
+            data = None
+    ids = {"pset_id": entry["id"], "property_id": prop["id"] if prop else None,
+           "property_ids": entry["property_ids"], "guid": entry["guid"],
+           "owner_history_id": entry["owner_history_id"]}
+    return data, ids
+
+
+def metre_unit_id(ifc_file):
+    for unit in ifc_file.by_type("IfcSIUnit"):
+        if unit.UnitType == "LENGTHUNIT" and not unit.Prefix and unit.Name == "METRE":
+            return unit.id()
+    return None
 
 
 def _header(ifc_file):
@@ -292,6 +353,10 @@ def extract(ifc_file):
         warnings.append(f"{schema} is not supported. Use IFC2X3, IFC4 or IFC4X3.")
     if schema == "IFC2X3" and site_entity is None:
         warnings.append("IFC2X3 files need an IfcSite to store georeferencing.")
+    if georef.get("crs_unresolved"):
+        warnings.append(f"The file is georeferenced in “{georef.get('crs_name')}”, which could not be matched "
+                        "to an EPSG code. Choose the coordinate system in the next step.")
+    gdh, gdh_ids = gdh_info(project)
 
     return {
         "version": META_VERSION,
@@ -319,5 +384,9 @@ def extract(ifc_file):
         },
         "placement_bounds": placement_bounds,
         "georef": georef,
+        "gdh": gdh,
+        "gdh_ids": gdh_ids,
+        "project_id": project.id() if project else None,
+        "metre_unit_id": metre_unit_id(ifc_file),
         "warnings": warnings,
     }

@@ -26,6 +26,9 @@ GEOREF_STEPS = [
     ("write", "Writing the georeferenced IFC", 35),
     ("verify", "Checking the result", 65),
 ]
+FETCH_STEPS = [
+    ("download", "Downloading the file from the project", 100),
+]
 UPLOAD_STEPS = [
     ("send", "Uploading to the project", 95),
     ("confirm", "Waiting for the server to confirm", 5),
@@ -88,7 +91,7 @@ def prepare(job_dir, cache_dir=None, threads=2):
                 rep.start("package")
             rep.update("package", fraction, detail)
 
-        geo = geometry.build(ifc_file, glb_path, threads=threads,
+        geo = geometry.build(ifc_file, glb_path, threads=threads, edges_gz_path=job / "edges.bin.gz",
                              progress=lambda f, d=None: rep.update("geometry", f, d),
                              package_progress=on_package)
         if rep.step_state("geometry") == "running":
@@ -105,7 +108,7 @@ def prepare(job_dir, cache_dir=None, threads=2):
             try:
                 cache = Path(cache_dir)
                 cache.mkdir(parents=True, exist_ok=True)
-                for name in ("meta.json", "geometry.json", "model.glb.gz"):
+                for name in ("meta.json", "geometry.json", "model.glb.gz", "edges.bin.gz"):
                     if (job / name).exists():
                         shutil.copyfile(job / name, cache / f".{name}.part")
                         (cache / f".{name}.part").replace(cache / name)
@@ -121,7 +124,7 @@ def _close(a, b, rel=1e-9):
     return a is not None and b is not None and math.isclose(float(a), float(b), rel_tol=rel, abs_tol=1e-6)
 
 
-def georeference(job_dir, solution, crs):
+def georeference(job_dir, solution, crs, gdh=None):
     """Write the georeferenced copy and read it back to verify it."""
     import ifcopenshell
     from . import model_info, writer
@@ -135,7 +138,7 @@ def georeference(job_dir, solution, crs):
         for stale in ("output.ifc", "output.json"):
             (job / stale).unlink(missing_ok=True)
         rep.start("write")
-        summary = writer.write(src, out, meta, solution, crs, progress=lambda f: rep.update("write", f))
+        summary = writer.write(src, out, meta, solution, crs, progress=lambda f: rep.update("write", f), gdh=gdh)
         rep.done("write", f"{summary['added']} records added, {summary['replaced']} updated")
 
         rep.start("verify")
@@ -149,6 +152,8 @@ def georeference(job_dir, solution, crs):
         if not info.get("present") or mismatched or info.get("epsg") != crs["code"]:
             raise ValueError("The written file did not read back correctly "
                              f"({', '.join(mismatched) or 'georeferencing missing'}).")
+        if gdh and not model_info.gdh_info(next(iter(check.by_type("IfcProject")), None))[0]:
+            raise ValueError("The placement data (GDH_Georeferencing) did not read back.")
         rep.done("verify", f"{crs['id']} read back correctly")
 
         name = Path((read_json(job / "job.json", {}) or {}).get("filename") or "model.ifc").stem
@@ -223,7 +228,7 @@ UPLOAD_ERRORS = {
 }
 
 
-def upload_to_project(job_dir, api_base_url, project_id, authorization, timeout=600):
+def upload_to_project(job_dir, api_base_url, project_id, authorization, timeout=600, filename=None):
     """Send the georeferenced file to the GeoDataHub backend (runs in an I/O thread)."""
     import requests
 
@@ -235,7 +240,8 @@ def upload_to_project(job_dir, api_base_url, project_id, authorization, timeout=
         path = job / "output.ifc"
         if not output or not path.exists():
             raise ValueError("Write the georeferenced file before uploading it.")
-        body = _MultipartFile(path, "files", output["filename"], lambda f: rep.update("send", f))
+        name = _safe_filename(filename or output["filename"])
+        body = _MultipartFile(path, "files", name, lambda f: rep.update("send", f))
         headers = {"Content-Type": body.content_type}
         if authorization:
             headers["Authorization"] = authorization
@@ -255,7 +261,8 @@ def upload_to_project(job_dir, api_base_url, project_id, authorization, timeout=
             rep.fail(message)
             return
         rep.done("confirm", f"Server answered {response.status_code}")
-        rep.finish({"status": response.status_code, "response": payload, "project_id": project_id})
+        rep.finish({"status": response.status_code, "response": payload, "project_id": project_id,
+                    "filename": name})
     except requests.exceptions.ConnectionError:
         rep.fail(f"Could not connect to the project server ({api_base_url}).")
     except requests.exceptions.Timeout:
@@ -268,11 +275,80 @@ def upload_to_project(job_dir, api_base_url, project_id, authorization, timeout=
             body.close()
 
 
-def legacy_analyze(path, filename):
+def _safe_filename(name):
+    name = "".join(c for c in str(name or "") if c.isalnum() or c in "._- ").strip(" .") or "model.ifc"
+    if not name.lower().endswith(".ifc"):
+        name += ".ifc"
+    return name[:180]
+
+
+def fetch_from_project(job_dir, url, max_bytes, on_done, timeout=600):
+    """Download a project file (URL from the GeoDataHub file listing) into a job, then hand it on."""
+    import requests
+
+    job = Path(job_dir)
+    rep = TaskReporter(job / "tasks" / "fetch.json", "fetch", FETCH_STEPS)
+    try:
+        rep.start("download")
+        with requests.get(url, stream=True, timeout=(15, timeout)) as response:
+            if not response.ok:
+                raise ValueError(f"The project server answered {response.status_code} for the file.")
+            total = int(response.headers.get("Content-Length") or 0)
+            done = 0
+            with open(job / "upload.part", "wb") as fh:
+                for chunk in response.iter_content(1 << 20):
+                    fh.write(chunk)
+                    done += len(chunk)
+                    if done > max_bytes:
+                        raise ValueError(f"The file is larger than the {max_bytes // (1024 * 1024)} MB limit.")
+                    if total:
+                        rep.update("download", done / total, f"{done / 1e6:.1f} of {total / 1e6:.1f} MB")
+        rep.done("download", f"{done / 1e6:.1f} MB")
+        on_done(job.name)  # queue "prepare" first, so the job never looks idle in between
+        rep.finish({"bytes": done})
+    except requests.exceptions.RequestException as exc:
+        rep.fail(f"The file could not be downloaded from the project: {exc}")
+    except Exception as exc:
+        _log_error(job, "fetch")
+        rep.fail(_friendly(exc))
+
+
+def mesh_bounds(path, cache_dir=None, threads=2):
+    """World-metre extents of all geometry, cached per file content."""
+    import hashlib
+
+    from . import geometry
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    sha = digest.hexdigest()
+    cache = Path(cache_dir) / sha if cache_dir else None
+    if cache:
+        for name, key in (("geometry.json", "bounds_m"), ("bounds.json", "bounds_m")):
+            data = read_json(cache / name)
+            if data and data.get(key):
+                return data[key]
+    import ifcopenshell
+
+    bounds = geometry.extents(ifcopenshell.open(str(path)), threads)
+    if cache and bounds:
+        cache.mkdir(parents=True, exist_ok=True)
+        write_json(cache / "bounds.json", {"bounds_m": bounds})
+    return bounds
+
+
+def legacy_analyze(path, filename, cache_dir=None, threads=2):
     import ifcopenshell
     from .legacy import analyze
 
-    return analyze(ifcopenshell.open(str(path)), filename)
+    bounds = None
+    try:
+        bounds = mesh_bounds(path, cache_dir, threads)
+    except Exception:
+        log.warning("mesh extents failed for %s", filename, exc_info=True)
+    return analyze(ifcopenshell.open(str(path)), filename, mesh_bounds_m=bounds)
 
 
 def legacy_devs(path, filename):

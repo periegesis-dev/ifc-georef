@@ -1,7 +1,9 @@
-"""Responses of the original public API, kept field-for-field compatible.
+"""Responses of the public analysis API, kept field-for-field compatible.
 
 POST /api/analyze-georeferencing is used by the GeoDataHub frontend
-(components/Home/ThreeDViewModal.js, lib/ifcGeoreferencing.js).
+(components/Home/ThreeDViewModal.js, lib/ifcGeoreferencing.js). It reads
+is_georeferenced and bounding_box_world.min/max.{easting, northing, elevation};
+`transform` gives everything needed to place the model exactly (rotation, scale).
 """
 import math
 from collections import Counter
@@ -29,10 +31,20 @@ def _units_info(ifc_file):
     return out
 
 
-def analyze(ifc_file, filename):
+def _to_wgs84(epsg):
+    if not epsg:
+        return None
+    try:
+        return Transformer.from_crs(epsg, 4326, always_xy=True)
+    except Exception:
+        return None
+
+
+def analyze(ifc_file, filename, mesh_bounds_m=None):
     meta = model_info.extract(ifc_file)
     georef = meta["georef"]
     site = meta["site"] or {}
+    unit_m = meta["unit"]["metres"]
     result = {
         "filename": filename,
         "schema": meta["schema"],
@@ -50,6 +62,8 @@ def analyze(ifc_file, filename):
         "recommendations": [],
     }
 
+    epsg = georef.get("epsg")
+    to_wgs84 = _to_wgs84(epsg)
     if georef.get("present"):
         result["georeferencing_method"] = ("IFC4+ MapConversion" if meta["schema"] != "IFC2X3"
                                            else "IFC2x3 Property Sets")
@@ -66,22 +80,32 @@ def analyze(ifc_file, filename):
             "target_crs": crs_name, "eastings": mc["eastings"], "northings": mc["northings"],
             "orthogonal_height": mc["orthogonal_height"], "scale": mc["scale"],
         }
-        epsg = georef.get("epsg")
-        if epsg and mc["eastings"] is not None and mc["northings"] is not None:
-            try:
-                lon, lat = Transformer.from_crs(epsg, 4326, always_xy=True).transform(
-                    mc["eastings"], mc["northings"])
-                height = mc["orthogonal_height"] or 0
-                result["world_coordinates"] = {
-                    "utm": {"x": mc["eastings"], "y": mc["northings"], "z": height, "zone": epsg},
-                    "wgs84": {"latitude": lat, "longitude": lon, "altitude": height},
-                    "three_js": {"x": mc["eastings"] * 0.001, "y": height * 0.001,
-                                 "z": mc["northings"] * 0.001, "scale": mc["scale"],
-                                 "rotation_radians": rotation},
-                }
-            except Exception:
-                result["issues"].append({"type": "warning",
-                                         "message": f"Could not convert EPSG:{epsg} coordinates to WGS84."})
+        ccw = math.degrees(rotation)
+        result["transform"] = {
+            "epsg": epsg,
+            "eastings": mc["eastings"],
+            "northings": mc["northings"],
+            "orthogonal_height": mc["orthogonal_height"],
+            "rotation_deg_ccw_from_east": ccw,
+            "rotation_deg_clockwise": -ccw,
+            "scale": mc["scale"],
+            "file_unit_m": unit_m,
+        }
+        if georef.get("factors"):
+            result["transform"]["factors"] = georef["factors"]
+        if not epsg:
+            result["issues"].append({"type": "warning", "message":
+                                     f"The coordinate system “{crs_name}” could not be matched to an EPSG code."})
+        if to_wgs84 and mc["eastings"] is not None and mc["northings"] is not None:
+            lon, lat = to_wgs84.transform(mc["eastings"], mc["northings"])
+            height = mc["orthogonal_height"] or 0
+            result["world_coordinates"] = {
+                "utm": {"x": mc["eastings"], "y": mc["northings"], "z": height, "zone": epsg},
+                "wgs84": {"latitude": lat, "longitude": lon, "altitude": height},
+                "three_js": {"x": mc["eastings"] * unit_m, "y": height * unit_m,
+                             "z": mc["northings"] * unit_m, "scale": mc["scale"],
+                             "rotation_radians": rotation},
+            }
 
     if site:
         result["site_reference"] = {
@@ -118,40 +142,47 @@ def analyze(ifc_file, filename):
             "type": "error",
             "message": "File is not georeferenced. Consider adding coordinate reference system information."})
 
-    if georef.get("present") and bounds and georef.get("eastings") is not None:
-        result["bounding_box_world"] = _bounding_box_world(georef, bounds)
+    if georef.get("present") and georef.get("eastings") is not None:
+        if mesh_bounds_m:
+            # mesh extents (world metres) -> file units, the coordinates IfcMapConversion transforms
+            local = {"min": [v / unit_m for v in mesh_bounds_m["min"]],
+                     "max": [v / unit_m for v in mesh_bounds_m["max"]], "source": "geometry"}
+        elif bounds:
+            local = {"min": bounds["min"], "max": bounds["max"], "source": "placements"}
+            result["issues"].append({"type": "warning", "message":
+                                     "The bounding box uses element placements; the geometry could not be read."})
+        else:
+            local = None
+        if local:
+            result["bounding_box_world"] = _bounding_box_world(georef, local, to_wgs84)
     return result
 
 
-def _bounding_box_world(georef, bounds):
-    lo, hi = bounds["min"], bounds["max"]
+def _bounding_box_world(georef, local, to_wgs84):
+    lo, hi = local["min"], local["max"]
     angle = math.atan2(georef["x_axis_ordinate"], georef["x_axis_abscissa"])
     c, s = math.cos(angle), math.sin(angle)
     k = georef["scale"] or 1.0
     e0, n0, h0 = georef["eastings"], georef["northings"], georef["orthogonal_height"] or 0.0
-    epsg = georef.get("epsg") or 2056
-    try:
-        to_wgs84 = Transformer.from_crs(epsg, 4326, always_xy=True)
-    except Exception:
-        to_wgs84 = None
+
+    def lonlat(e, n):
+        if not to_wgs84:
+            return None, None
+        return to_wgs84.transform(e, n)
 
     corners = []
     for name, x, y in (("bottom_left", lo[0], lo[1]), ("bottom_right", hi[0], lo[1]),
                        ("top_right", hi[0], hi[1]), ("top_left", lo[0], hi[1])):
         e = k * (c * x - s * y) + e0
         n = k * (s * x + c * y) + n0
-        lon = lat = None
-        if to_wgs84:
-            lon, lat = to_wgs84.transform(e, n)
+        lon, lat = lonlat(e, n)
         corners.append({"name": name, "easting": e, "northing": n, "elevation": k * lo[2] + h0,
                         "latitude": lat, "longitude": lon})
 
     def corner(fn):
         e = fn(c["easting"] for c in corners)
         n = fn(c["northing"] for c in corners)
-        lon = lat = None
-        if to_wgs84:
-            lon, lat = to_wgs84.transform(e, n)
+        lon, lat = lonlat(e, n)
         return e, n, lat, lon
 
     min_e, min_n, min_lat, min_lon = corner(min)
@@ -162,7 +193,8 @@ def _bounding_box_world(georef, bounds):
                 "latitude": min_lat, "longitude": min_lon},
         "max": {"easting": max_e, "northing": max_n, "elevation": k * hi[2] + h0,
                 "latitude": max_lat, "longitude": max_lon},
-        "crs": georef.get("crs_name") or f"EPSG:{epsg}",
+        "crs": f"EPSG:{georef['epsg']}" if georef.get("epsg") else None,
+        "source": local["source"],
         "description": "Bounding box of the IFC building in world coordinates (Easting/Northing) and WGS84 (Lat/Long)",
     }
 

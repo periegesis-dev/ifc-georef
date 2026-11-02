@@ -3,14 +3,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
+import { EdgeIndex } from './snap.js';
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-const SNAP_CORNER_PX = 14;
-const SNAP_EDGE_PX = 8;
-const SNAP_COLORS = { corner: 0x15803d, edge: 0xd97706, surface: 0x2563eb };
+export const DEFAULT_SNAP_PX = 12; // same default as the GeoDataHub 2D tool; 0 = off
+const SNAP_COLORS = { corner: 0x15803d, midpoint: 0x7c3aed, edge: 0xd97706, surface: 0x2563eb };
 
 /**
  * 3D model view with point picking.
@@ -24,7 +24,8 @@ export class ModelViewer {
     this.meshes = [];
     this.model = null;
     this.picking = false;
-    this.snap = true;
+    this.snapPx = DEFAULT_SNAP_PX;
+    this.edges = null;
     this.hover = null;
     this.radius = 10;
 
@@ -60,6 +61,7 @@ export class ModelViewer {
     this.markerGeometry = dot;
     this.markerMaterial = new THREE.MeshBasicMaterial({ color: 0x111827, depthTest: false });
     this.siteMaterial = new THREE.MeshBasicMaterial({ color: 0x1d4ed8, depthTest: false });
+    this.measureMaterial = new THREE.MeshBasicMaterial({ color: 0x7c3aed, depthTest: false });
     this.markers = new THREE.Group();
     this.scene.add(this.markers);
     this.helpers = new THREE.Group();
@@ -165,6 +167,7 @@ export class ModelViewer {
     }
     this.model = null;
     this.meshes = [];
+    this.edges = null;
     this.helpers.clear();
     for (const child of [...this.markers.children]) this.markers.remove(child);
     this.setPicking(false);
@@ -229,8 +232,23 @@ export class ModelViewer {
     this.requestRender();
   }
 
-  setSnap(on) {
-    this.snap = Boolean(on);
+  /** Snap radius in screen pixels (0 = no snapping). */
+  setSnapRadius(px) {
+    this.snapPx = Math.max(0, Math.min(50, Number(px) || 0));
+  }
+
+  /** Feature edges (edges.bin) for snapping; without them snapping uses the hit triangle only. */
+  async loadEdges(url) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return false;
+      const segments = new Float32Array(await response.arrayBuffer());
+      this.edges = segments.length >= 6 ? new EdgeIndex(segments) : null;
+      return Boolean(this.edges);
+    } catch (e) {
+      this.edges = null;
+      return false;
+    }
   }
 
   setPicking(on) {
@@ -248,6 +266,61 @@ export class ModelViewer {
     return new THREE.Vector2((p.x + 1) / 2 * rect.width, (1 - p.y) / 2 * rect.height);
   }
 
+  /** World size of one screen pixel at a point (perspective camera). */
+  worldPerPixel(point, rect) {
+    const distance = this.camera.position.distanceTo(point);
+    return (2 * distance * Math.tan((this.camera.fov * Math.PI) / 360)) / rect.height;
+  }
+
+  /**
+   * Snap target near the cursor: model corners first, then edge midpoints, then the
+   * nearest point on a feature edge — across all geometry near the hit point, not only
+   * the hit triangle. Feature edges exclude triangulation diagonals.
+   */
+  snapTo(hit, mouse, rect) {
+    const radius = this.snapPx;
+    if (!radius) return null;
+    let best = null;
+    const consider = (point, kind, priority) => {
+      const d = this.screenPoint(point, rect).distanceTo(mouse);
+      if (d > radius) return;
+      if (!best || priority < best.priority || (priority === best.priority && d < best.d)) {
+        best = { point: point.clone(), kind, priority, d };
+      }
+    };
+    if (this.edges) {
+      const s = this.edges.seg;
+      const a = new THREE.Vector3();
+      const b = new THREE.Vector3();
+      const q = new THREE.Vector3();
+      const line = new THREE.Line3(a, b);
+      const r = this.worldPerPixel(hit.point, rect) * radius * 1.5;
+      this.edges.query(hit.point, r, (i) => {
+        const o = i * 6;
+        a.set(s[o], s[o + 1], s[o + 2]);
+        b.set(s[o + 3], s[o + 4], s[o + 5]);
+        consider(a, 'corner', 0);
+        consider(b, 'corner', 0);
+        consider(q.copy(a).add(b).multiplyScalar(0.5), 'midpoint', 1);
+        line.closestPointToPoint(hit.point, true, q);
+        consider(q, 'edge', 2);
+      });
+      return best;
+    }
+    // no edge data: fall back to the hit triangle's corners and sides
+    if (!hit.face) return null;
+    const position = hit.object.geometry.attributes.position;
+    const corners = [hit.face.a, hit.face.b, hit.face.c].map(
+      (i) => new THREE.Vector3().fromBufferAttribute(position, i).applyMatrix4(hit.object.matrixWorld));
+    corners.forEach((c) => consider(c, 'corner', 0));
+    for (let i = 0; i < 3; i += 1) {
+      const q = new THREE.Vector3();
+      new THREE.Line3(corners[i], corners[(i + 1) % 3]).closestPointToPoint(hit.point, true, q);
+      consider(q, 'edge', 2);
+    }
+    return best;
+  }
+
   updateHover(clientX, clientY) {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const sx = clientX - rect.left;
@@ -260,36 +333,9 @@ export class ModelViewer {
       this.cursor.visible = false;
       return;
     }
-    let point = hit.point.clone();
-    let kind = 'surface';
-    if (this.snap && hit.face) {
-      const position = hit.object.geometry.attributes.position;
-      const corners = [hit.face.a, hit.face.b, hit.face.c].map(
-        (i) => new THREE.Vector3().fromBufferAttribute(position, i).applyMatrix4(hit.object.matrixWorld));
-      const mouse = new THREE.Vector2(sx, sy);
-      let best = null;
-      let bestDistance = SNAP_CORNER_PX;
-      for (const c of corners) {
-        const d = this.screenPoint(c, rect).distanceTo(mouse);
-        if (d < bestDistance) { bestDistance = d; best = c; }
-      }
-      if (best) {
-        point = best;
-        kind = 'corner';
-      } else {
-        bestDistance = SNAP_EDGE_PX;
-        for (let i = 0; i < 3; i += 1) {
-          const q = new THREE.Vector3();
-          new THREE.Line3(corners[i], corners[(i + 1) % 3]).closestPointToPoint(hit.point, true, q);
-          const d = this.screenPoint(q, rect).distanceTo(mouse);
-          if (d < bestDistance) { bestDistance = d; best = q; }
-        }
-        if (best) {
-          point = best;
-          kind = 'edge';
-        }
-      }
-    }
+    const snapped = this.snapTo(hit, new THREE.Vector2(sx, sy), rect);
+    const point = snapped ? snapped.point : hit.point.clone();
+    const kind = snapped ? snapped.kind : 'surface';
     this.hover = { point, kind };
     this.cursor.position.copy(point);
     this.cursor.material.color.setHex(SNAP_COLORS[kind]);
@@ -312,11 +358,12 @@ export class ModelViewer {
     for (const child of [...this.markers.children]) this.markers.remove(child);
     for (const m of markers) {
       const position = this.glFromWorld(m.world);
-      const sphere = new THREE.Mesh(this.markerGeometry, m.kind === 'site' ? this.siteMaterial : this.markerMaterial);
+      const material = m.kind === 'site' ? this.siteMaterial : m.kind === 'measure' ? this.measureMaterial : this.markerMaterial;
+      const sphere = new THREE.Mesh(this.markerGeometry, material);
       sphere.position.copy(position);
       sphere.renderOrder = 999;
       const div = document.createElement('div');
-      div.className = `marker-label${m.kind === 'site' ? ' site' : ''}`;
+      div.className = `marker-label${m.kind === 'site' ? ' site' : m.kind === 'measure' ? ' measure' : ''}`;
       div.textContent = m.label;
       const label = new CSS2DObject(div);
       label.position.copy(position);

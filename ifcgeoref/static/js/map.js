@@ -61,6 +61,14 @@ export function createMap(element, { basemap = 'osm', center = [46.8, 8.2], zoom
   return { map, setBasemap };
 }
 
+/** Swiss cadastral map (parcel boundaries) as a transparent overlay, as used in GeoDataHub. */
+export function cadastralLayer() {
+  return L.tileLayer.wms('https://wms.geo.admin.ch/', {
+    layers: 'ch.kantone.cadastralwebmap-farbe', format: 'image/png', transparent: true, version: '1.3.0',
+    maxZoom: 22, attribution: 'Cadastral map &copy; swisstopo, cantons',
+  });
+}
+
 export function pinIcon(text, kind = '') {
   return L.divIcon({
     className: '',
