@@ -1,136 +1,120 @@
+# IFC Georeferencing
 
-# IfcGref Web-Based Application
+Web application that places IFC (BIM) models on the map. It writes the georeferencing into the
+file the standard way:
 
-![ifcgref-release](https://github.com/tudelft3d/ifcgref/assets/50393714/e335cd23-d063-4f86-8cdf-d9898b6a955a)
+| Schema | What is written |
+| --- | --- |
+| IFC4, IFC4X3 | `IfcProjectedCRS` + `IfcMapConversion` on the model context |
+| IFC2X3 | `ePSet_MapConversion` + `ePSet_ProjectedCRS` property sets on the `IfcSite` |
 
+The original file is copied byte for byte; only the georeferencing records are added (or replaced
+when the file is already georeferenced). Every result is read back and checked before it is
+offered for download.
 
-## Overview
-
-This Flask-based application serves the purpose of georeferencing IFC (Industry Foundation Classes) files, which are commonly used in the context of Building Information Modeling (BIM) data exchange. To accomplish georeferencing, the application leverages the **IFCMapConversion** entity in IFC4, which facilitates the updating of data and the conversion from a local Coordinate Reference System (CRS), often referred to as the engineering coordinate system, into the coordinate reference system of the underlying map (Projected CRS). It's accessible at https://ifcgref.bk.tudelft.nl.
-
-
-
-## Prerequisites
-
-Before running the application, make sure you have the following prerequisites installed on your system:
-
-- Python 3
-- Flask
-- ifcopenshell
-- pyproj
-- pint
-- numpy
-- scipy
-- pandas
-- shapely
-
-You can install these dependencies using pip:
-
-```bash
-pip install -r requirements.txt
-```
-
-Or install individually:
-
-```bash
-pip install Flask ifcopenshell pyproj pint numpy scipy pandas shapely
-```
-
-## Supported IFC versions
-
-
-Coordinate operations become accessible starting from IFC 4. For earlier versions like the widely utilized IFC2x3, the utilization of Property sets (Pset) is employed to enable georeferencing. The table below outlines the supported versions: 
-
-| Version | Name |
-| -------- | ------- |
-| 4.3.2.0 | IFC 4.3 ADD2 |
-| 4.0.2.0 | IFC4 ADD2 TC1 |
-| 4.0.2.1 | IFC4 ADD2 |
-| 4.0.2.0	| IFC4 ADD1 |
-| 4.0.0.0 | IFC4 |
-| 2.3.0.1 | IFC2x3 TC1 |
-| 2.3.0.0 | IFC2x3 |
-
-
-## Usage
-
-### Method 1: Interactive Georeferencing
-
-The application now features an interactive interface that allows you to visually select correspondence points between your IFC building model and real-world map locations.
-
-#### Step 1: Start the Application
-1. Clone this repository or download the application files to your local machine.
-2. Navigate to the project directory in your terminal.
-3. Run the Flask application:
-
-```bash
-python app.py
-```
-
-4. Access the application in your web browser by going to http://localhost:5003/.
-
-#### Step 2: Upload Your IFC File
-- Click "Interactive Georeferencing" on the homepage
-- Upload your IFC file (you can use the sample file `Ifc4_SampleHouse_0_GroundFloor.ifc` located in the root directory)
-- The system will analyze the file and display a 3D visualization of your building
-
-#### Step 3: Select Correspondence Points
-- **Building Model View (Left Side)**: Click on specific points within your 3D building model to select reference points
-  - Choose corners, edges, or distinctive features of your building
-  - The system displays your building as a rectangle with red corner markers and green edge markers
-  - Select at least 1 point (more points improve accuracy)
-  - **After selecting points on the building, click the "Next" button to proceed to the map view**
-
-- **Map View (Right Side)**: After clicking "Next", you'll see the interactive map
-  - Navigate to your target location 
-  - Click on the exact map location that corresponds to each building point you selected
-  - The system automatically detects the appropriate coordinate system (e.g., EPSG:32643 for Islamabad)
-  - Ensure you select the same number of points on the map as you did on the building
-
-#### Step 4: Process Georeferencing
-- Once you've selected corresponding points on both the building and map, click "Submit Points"
-- The system will automatically:
-  - Calculate coordinate transformations
-  - Apply proper scale factors (converts IFC millimeters to real-world meters)
-  - Handle coordinate system conversions (lat/lon to UTM)
-  - Perform rotation and translation calculations
-
-#### Step 5: Download Results
-- Review the transformation results and coordinate details
-- Download the georeferenced IFC file with "_georeferenced.ifc" suffix
-- The file is now properly positioned in real-world coordinates
-
-### Method 2: Traditional Manual Input
-
-1. Follow steps 1-4 from Method 1 to start the application
-2. Choose "Manual Georeferencing" instead of interactive mode
-3. Follow the on-screen instructions to upload an IFC file and specify the target EPSG code
-4. Manually enter coordinate values for georeferencing points
-5. The application will georeference the IFC file and provide details about the process
-6. You can then visualize the georeferenced IFC file on the map and download it
-
-### Example Usage with Sample File
-
-To test the interactive georeferencing:
-
-1. Start the application as described above
-2. Select "Interactive Georeferencing"
-3. Upload the provided sample file: `Ifc4_SampleHouse_0_GroundFloor.ifc`
-4. In the building view, click on a corner of the displayed house model
-5. In the map view, navigate to Islamabad, Pakistan and click on a location where you want to place the building
-6. Click "Submit Points" to process the georeferencing
-7. Download the resulting georeferenced IFC file
-
-## File Structure
-
-- `app.py`: The main Flask application file
-- `Ifc4_SampleHouse_0_GroundFloor.ifc`: Sample IFC file for testing the interactive georeferencing
-- `requirements.txt`: Python package dependencies
-- `static/`: Directory to store static files (CSS, images, JavaScript)
-- `templates/`: HTML templates for the web interface including interactive georeferencing
-- `uploads/`: Directory to temporarily store uploaded IFC files
-- `georeference_ifc/`: Core georeferencing module
+Based on [IfcGref](https://github.com/tudelft3d/ifcgref) by the TU Delft 3D geoinformation group (MIT).
 
 ## Workflow
 
-![Screenshot 2024-02-26 at 17 28 20 (2)](https://github.com/tudelft3d/ifcgref/assets/50393714/3d14b4c7-9652-4b77-bc5b-77bd2a736341)
+1. **Upload** an `.ifc` or `.ifczip`. The file is read once, in the background, with progress for
+   every step: units, site location, existing georeferencing and a 3D preview are extracted.
+2. **Coordinate system.** The building location (from the file, from GeoDataHub, an address search or
+   a click on the map) is used to suggest coordinate systems; the national grid is preselected and
+   coverage is checked.
+3. **Placement.** Use the location stored in the file and/or control points: click a corner on the 3D
+   model (corners and edges snap), then the same spot on the map. Points can also be typed or pasted
+   from Excel. The result updates live with the error of every point, a footprint preview on the map,
+   and fine-tuning controls (move, rotate, height).
+4. **Save.** The georeferenced copy is written and verified, then downloaded or uploaded straight into
+   the GeoDataHub project.
+
+Scale is fixed to the unit conversion by default (rigid placement); fitting the scale from the points
+is an advanced option. With one point the rotation comes from the north direction stored in the file,
+corrected for grid convergence of the chosen map projection.
+
+## Run with Docker
+
+```bash
+cp .env.example .env        # optional, adjust API_BASE_URL etc.
+docker compose up --build -d
+```
+
+Open <http://localhost:5002>. Job files live in the Docker volume `georef-data` and are removed after
+`JOB_TTL_HOURS` (default 24 h).
+
+Run the tests (also in Docker):
+
+```bash
+docker compose --profile test run --rm --build tests
+```
+
+## Run without Docker
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+python app.py               # http://127.0.0.1:5002
+python -m pytest
+```
+
+## Opening from GeoDataHub
+
+The frontend opens `/?project_id=<id>&token=<token>`. Both values are moved into session storage and
+removed from the address bar right away (they are never logged). Optional parameters pre-fill the
+form: `epsg=2056`, `lat=47.37&lon=8.54`.
+
+A page that embeds this tool in an iframe can send the login instead of putting it in the URL:
+
+```js
+iframe.contentWindow.postMessage({ type: 'ifc-georef:auth', projectId, token }, 'https://<this-service>');
+```
+
+## Configuration
+
+See [.env.example](.env.example). The most important settings:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `API_BASE_URL` | `http://localhost:8000` | GeoDataHub backend for "Upload to project" |
+| `DEFAULT_EPSG` | `2056` | Fallback coordinate system |
+| `CORS_ORIGINS` | GeoDataHub + localhost | Browser origins allowed to call the API / embed the page |
+| `MAX_UPLOAD_MB` | `500` | Upload limit |
+| `MAX_PARALLEL_JOBS` | `2` | IFC files processed at the same time |
+| `ELEVATION_LOOKUP` | `all` | Ground height suggestions: `all`, `swisstopo` or `off` |
+
+## API
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/jobs` | Upload a file (multipart `file`), starts processing |
+| `GET /api/jobs/<id>` | Progress of every task, metadata, 3D/footprint info, result |
+| `GET /api/jobs/<id>/model.glb` | 3D preview (binary glTF, gzip) |
+| `POST /api/jobs/<id>/solve` | Compute the placement and a map preview (JSON body, see below) |
+| `POST /api/jobs/<id>/georeference` | Write and verify the georeferenced file |
+| `GET /api/jobs/<id>/download` | Download the result |
+| `POST /api/jobs/<id>/upload` | Send the result to `API_BASE_URL/api/ifc/<project_id>/upload/` (`Authorization` header is forwarded) |
+| `GET /api/crs/suggest?lat=&lon=` | Ranked EPSG suggestions for a location |
+| `GET /api/crs/search?q=` | Search EPSG systems by code, name or area |
+| `POST /api/analyze-georeferencing` | Legacy analysis endpoint used by the GeoDataHub 3D viewer |
+
+Placement body: `{"epsg": 2056, "use_site": true, "points": [{"label": "P1", "local": [x, y, z],
+"target": [e, n, h]}], "scale_mode": "fixed", "rotation_deg": null, "height": null, "offset": [0, 0, 0]}`.
+Local coordinates are in the IFC file's length unit, targets in the units of the chosen system.
+
+## Project layout
+
+```
+app.py                  entry point (gunicorn app:app / python app.py)
+ifcgeoref/
+  web.py                routes
+  jobs.py, tasks.py     job storage, background processing, progress
+  model_info.py         reads units, site, context, existing georeferencing
+  geometry.py           3D preview (glTF) and footprint
+  crs.py                EPSG details, suggestions, search, conversions
+  solver.py             closed-form least-squares placement
+  placement.py          request -> solution + map preview
+  writer.py, step.py    writes georeferencing into the STEP file
+  legacy.py             /api/analyze-georeferencing response
+  templates/, static/   the single-page interface
+tests/                  pytest suite (runs in Docker)
+samples/                sample IFC files used by the tests
+```

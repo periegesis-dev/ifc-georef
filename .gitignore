@@ -199,3 +199,6 @@ settings.py
 secrets.py
 venv/
 venv/
+
+# Runtime data (jobs, cache) when running without Docker
+data/

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ status }} · IFC Georeferencing</title>
+  <link rel="icon" href="{{ asset('img/favicon.png') }}">
+  <link rel="stylesheet" href="{{ asset('css/app.css') }}">
+</head>
+<body class="error-page">
+  <div class="card narrow">
+    <img src="{{ asset('img/logo.webp') }}" alt="GeoProfile" height="26">
+    <h1>{{ 'Page not found' if status == 404 else 'Something went wrong' }}</h1>
+    <p class="lead">{{ message }}</p>
+    <a class="btn primary" href="/">Go to IFC Georeferencing</a>
+  </div>
+</body>
+</html>
